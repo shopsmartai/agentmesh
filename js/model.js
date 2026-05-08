@@ -176,9 +176,6 @@ class ModelRuntime {
       parts: [{ text: typeof m.content === 'string' ? m.content : String(m.content) }],
     }));
 
-    const cloudModel = settings.getCloudModel();
-    const url = `${GEMINI_BASE}/${encodeURIComponent(cloudModel)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-
     const body = JSON.stringify({
       systemInstruction,
       contents,
@@ -188,30 +185,58 @@ class ModelRuntime {
       },
     });
 
-    let response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-        signal,
-      });
-    } catch (err) {
-      throw new Error(`Network error calling Gemini API: ${err.message}`);
-    }
+    // Try the user's selected model first. If Gemini returns a 5xx (the
+    // 31B model especially is prone to "Internal error encountered" under
+    // free-tier load), fall through to the next model in the fallback
+    // chain. This keeps the demo working when Google's larger endpoints
+    // are temporarily overloaded.
+    const userModel = settings.getCloudModel();
+    const tryOrder = [userModel, ...settings.CLOUD_MODEL_FALLBACKS.filter((m) => m !== userModel)];
 
-    if (!response.ok) {
-      // Pull the error JSON if Google sent one — it usually has a useful
-      // message like "API key not valid" or "model not found".
+    let lastError = null;
+    for (let i = 0; i < tryOrder.length; i++) {
+      const modelId = tryOrder[i];
+      const url = `${GEMINI_BASE}/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+
+      let response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          signal,
+        });
+      } catch (err) {
+        // Network-layer failure — retry with the next model.
+        lastError = new Error(`Network error calling Gemini API: ${err.message}`);
+        continue;
+      }
+
+      if (response.ok) {
+        return this._consumeGeminiStream(response, onToken);
+      }
+
+      // Non-2xx. Pull the error JSON if Google sent one.
       let detail = `HTTP ${response.status}`;
       try {
         const errBody = await response.json();
         detail = errBody?.error?.message || detail;
       } catch { /* ignore */ }
-      throw new Error(`Gemini API: ${detail}`);
+
+      // 4xx errors mean we (or the user) sent something wrong — bail
+      // immediately, retrying won't help.
+      if (response.status >= 400 && response.status < 500) {
+        throw new Error(`Gemini API: ${detail}`);
+      }
+
+      // 5xx — Google-side problem, often capacity. Try the next model.
+      console.warn(`[model] ${modelId} returned ${response.status}; falling through.`);
+      lastError = new Error(`Gemini API (${modelId}): ${detail}`);
+      // Brief backoff before the next attempt so we don't hammer.
+      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
     }
 
-    return this._consumeGeminiStream(response, onToken);
+    throw lastError || new Error('Gemini API: all models in fallback chain failed');
   }
 
   async _consumeGeminiStream(response, onToken) {
