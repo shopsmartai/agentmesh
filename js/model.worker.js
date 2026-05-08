@@ -24,12 +24,30 @@
 
 const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
 
+// Gemma 4 needs per-component dtypes — audio/vision encoders don't have
+// q4f16 WebGPU kernels for some Chrome drivers, so they ship fp16 while the
+// decoder + embed_tokens stay quantized. This combo matches the official
+// webml-community/Gemma-4-WebGPU demo and is verified-working on prod.
+const GEMMA_4_DTYPE_OPTIMAL = {
+  audio_encoder: 'fp16',
+  vision_encoder: 'fp16',
+  embed_tokens: 'q4f16',
+  decoder_model_merged: 'q4f16',
+};
+// All-q4 fallback if the optimal mix fails (older drivers).
+const GEMMA_4_DTYPE_FALLBACK = {
+  audio_encoder: 'q4',
+  vision_encoder: 'q4',
+  embed_tokens: 'q4',
+  decoder_model_merged: 'q4',
+};
+
 const MODEL_GEMMA_4_E2B = {
   id: 'onnx-community/gemma-4-E2B-it-ONNX',
   label: 'gemma-4-E2B-it', family: 'gemma', size: '~3.4GB',
   attempts: [
-    { device: 'webgpu', dtype: 'q4f16' },
-    { device: 'webgpu', dtype: 'q4' },
+    { device: 'webgpu', dtype: GEMMA_4_DTYPE_OPTIMAL },
+    { device: 'webgpu', dtype: GEMMA_4_DTYPE_FALLBACK },
   ],
 };
 
@@ -109,6 +127,9 @@ function formatStatus(data) {
         return `Streaming ${fileLabel(data.file)} · ${mb(data.loaded)}MB / ${mb(data.total)}MB`;
       }
       return `Streaming ${fileLabel(data.file)}`;
+    case 'progress_total':
+      // v4 fires this with cumulative-load progress as a percentage.
+      return `Loading model · ${Math.round(data.progress || 0)}%`;
     case 'done': return `${fileLabel(data.file)} cached`;
     case 'ready': return 'Compiling shaders...';
     default: return data.status || 'Working...';
@@ -206,10 +227,13 @@ async function loadModel(forceCandidate) {
       for (const attempt of attempts) {
         if (attempt.device === 'webgpu' && !hasWebGPU) continue;
         const { device, dtype } = attempt;
+        const dtypeLabel = typeof dtype === 'string'
+          ? dtype
+          : (dtype.decoder_model_merged || 'mixed');
         try {
           post({
             type: 'progress', progress: 6,
-            status: `Loading ${candidate.label} (${device}/${dtype})...`,
+            status: `Loading ${candidate.label} (${device}/${dtypeLabel})...`,
             file: candidate.id,
           });
 
@@ -230,11 +254,11 @@ async function loadModel(forceCandidate) {
           return;
         } catch (err) {
           const detail = describeError(err);
-          console.warn(`[model.worker] ${candidate.id} ${device}/${dtype} failed:`, detail, err);
-          lastDetail = `${candidate.label} ${device}/${dtype}: ${detail}`;
+          console.warn(`[model.worker] ${candidate.id} ${device}/${dtypeLabel} failed:`, detail, err);
+          lastDetail = `${candidate.label} ${device}/${dtypeLabel}: ${detail}`;
           post({
             type: 'progress', progress: 6,
-            status: `${candidate.label} ${device}/${dtype} unavailable: ${String(detail).slice(0, 80)}`,
+            status: `${candidate.label} ${device}/${dtypeLabel} unavailable: ${String(detail).slice(0, 80)}`,
           });
         }
       }
