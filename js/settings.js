@@ -21,16 +21,18 @@ const KEYS = {
 
 const VALID_MODES = new Set(['local', 'cloud']);
 
-// Default cloud model. Gemma 4 is offered through Google AI Studio under a
-// few names; we default to the 27B dense variant which gives the best
-// general-purpose answer quality on the free tier. Users can override.
-const DEFAULT_CLOUD_MODEL = 'gemma-3-27b-it';
-// Fallback if the chosen model 404s. Keeps the demo working when Google
-// renames or sunsets a specific variant.
+// Default cloud model. Gemma 4 was released April 2026 with two sizes
+// hosted on Google AI Studio: 26B Mixture-of-Experts (fast, efficient)
+// and 31B Dense (highest quality). We default to the MoE variant because
+// it gives 31B-class quality at much lower latency and stays well within
+// the free tier's per-minute quotas.
+const DEFAULT_CLOUD_MODEL = 'gemma-4-26b-a4b-it';
+// Fallback chain if the chosen model 404s or quota-limits. We keep the
+// older Gemma 3 variants as a safety net so the demo never goes dark.
 export const CLOUD_MODEL_FALLBACKS = [
+  'gemma-4-26b-a4b-it',
+  'gemma-4-31b-it',
   'gemma-3-27b-it',
-  'gemma-3-12b-it',
-  'gemma-3-4b-it',
 ];
 
 const listeners = new Set();
