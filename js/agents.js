@@ -12,14 +12,16 @@ import { runTool, formatResultsForModel, TOOLS } from './tools.js';
 // PROMPTS
 // ============================================
 
-const PLANNER_SYSTEM = `You decompose a research question into exactly 3 sub-questions for parallel research.
+const PLANNER_SYSTEM = `You produce exactly 3 short search phrases about the user's topic.
 
-Each sub-question explores a different angle of THE SAME TOPIC as the original question. The three angles are:
-1. Definition / what it is
-2. Examples / how it is used
-3. Limitations / trade-offs
+Each phrase is 4 to 8 words. No question marks. No filler words like "fundamental", "core", "current", "various". Just the topic plus one angle.
 
-Output exactly 3 lines, numbered "1.", "2.", "3.". Each sub-question MUST contain the main topic from the original question. No preamble. No JSON. No extra text.`;
+Use these 3 angles in order:
+1. <topic> definition
+2. <topic> examples
+3. <topic> limitations
+
+Output exactly 3 lines, numbered "1.", "2.", "3.". The topic word from the user's question MUST appear in each line. No preamble. No JSON. No commentary.`;
 
 const WORKER_SYSTEM = `You answer ONE sub-question using ONLY the research notes provided.
 
@@ -185,12 +187,12 @@ async function runToolWithFallback(primary, query, { onUpdate } = {}) {
 export async function planQuery(model, query, { onUpdate, image } = {}) {
   onUpdate?.({ status: 'thinking', text: '' });
 
-  // When an image is attached, ask the planner to anchor sub-questions on
-  // both the visual content AND the user's optional text query. The image
-  // appears in the user message so multimodal Gemma 4 sees it directly.
+  // When an image is attached, ask the planner to anchor on the image
+  // content as well as any text query. Image appears as a content block so
+  // multimodal Gemma 4 sees it directly.
   const userText = image
-    ? `Image attached above.\nUser's question or prompt: "${query}"\n\nOutput exactly 3 numbered sub-questions about THIS image and the user's prompt now.`
-    : `Question: "${query}"\n\nOutput exactly 3 numbered sub-questions now.`;
+    ? `Image attached above.\nTopic from user prompt: "${query}"\n\nOutput exactly 3 short search phrases about THIS image now.`
+    : `User's topic: "${query}"\n\nOutput exactly 3 short search phrases now.`;
 
   const messages = [
     { role: 'system', content: PLANNER_SYSTEM },
@@ -198,9 +200,11 @@ export async function planQuery(model, query, { onUpdate, image } = {}) {
   ];
 
   let streamed = '';
+  // Greedy decoding (temperature 0) and a tight token cap. Planner outputs
+  // are short and structured; sampling adds latency without quality.
   const raw = await model.chat(messages, {
-    maxTokens: 400,
-    temperature: 0.4,
+    maxTokens: 150,
+    temperature: 0,
     image,
     onToken: (t) => {
       streamed += t;
@@ -256,9 +260,11 @@ export async function runWorker(model, subQuestion, agentId, { onUpdate } = {}) 
   ];
 
   let streamed = '';
+  // Greedy decoding + tighter cap. Workers should be 2-4 sentences max;
+  // longer outputs are usually padding.
   const raw = await model.chat(messages, {
-    maxTokens: 256,
-    temperature: 0.6,
+    maxTokens: 160,
+    temperature: 0,
     onToken: (t) => {
       streamed += t;
       onUpdate?.({ status: 'thinking', text: streamed });
@@ -291,9 +297,12 @@ export async function synthesize(model, query, workerResults, { onUpdate } = {})
   ];
 
   let streamed = '';
+  // Greedy decoding for the synthesizer too. The structure is rigid
+  // (## sections + Bottom line) so determinism helps. Token cap 500 is
+  // enough for 2-3 sections plus the takeaway.
   const raw = await model.chat(messages, {
-    maxTokens: 700,
-    temperature: 0.5,
+    maxTokens: 500,
+    temperature: 0,
     onToken: (t) => {
       streamed += t;
       onUpdate?.({ status: 'thinking', text: streamed });

@@ -81,6 +81,8 @@ export function clearSwarm() {
   $('#swarm-active').style.display = 'none';
   $('#swarm-empty').style.display = 'flex';
   $('#synthesis-section').style.display = 'none';
+  $('#synthesis-body').innerHTML = '';
+  synthPanelRevealed = false;
 }
 
 export function showSwarmGrid() {
@@ -195,15 +197,21 @@ export function renderSynthCard() {
   grid.appendChild(card);
 }
 
+// Tracks whether we've already revealed and auto-scrolled to the synth
+// panel for the current run, so we only scroll once (not on every token).
+let synthPanelRevealed = false;
+
 export function updateSynthCard({ status, text }) {
   const output = $('#agent-synth-output');
   const card = $('#agent-synth');
   if (!output || !card) return;
 
   if (status === 'thinking') {
-    // Show only first 600 chars in card, full text goes to synthesis section
+    // Card preview (first 600 chars). The full streaming output goes to
+    // the visible synthesis-body panel below — see updateSynthesisStreaming.
     const preview = text.length > 600 ? text.slice(0, 600) + '...' : text;
     output.innerHTML = `${escapeHtml(preview)}<span class="cursor-blink"></span>`;
+    updateSynthesisStreaming(text);
   } else if (status === 'done') {
     card.classList.remove('thinking');
     card.classList.add('done');
@@ -217,12 +225,38 @@ export function updateSynthCard({ status, text }) {
 // SYNTHESIS PANEL (final markdown output)
 // ============================================
 
+/**
+ * Render the synthesis panel during streaming. Reveal the panel on the
+ * first token (auto-scroll once), then keep updating its content as tokens
+ * arrive. Uses lightweight markdown so headings + bullets render as the
+ * user reads — no waiting for the full answer to appear.
+ */
+function updateSynthesisStreaming(text) {
+  const section = $('#synthesis-section');
+  const body = $('#synthesis-body');
+  if (!section || !body) return;
+
+  if (!synthPanelRevealed) {
+    section.style.display = 'block';
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    synthPanelRevealed = true;
+  }
+
+  // Re-render the whole panel each tick. The text is small enough
+  // (~1-2 KB max) that this is not a perf concern, and it keeps markdown
+  // structure consistent as headings/bullets complete mid-stream.
+  body.innerHTML = renderMarkdown(text) + '<span class="cursor-blink"></span>';
+}
+
 export function showSynthesis(markdownText) {
   const section = $('#synthesis-section');
   const body = $('#synthesis-body');
   body.innerHTML = renderMarkdown(markdownText);
   section.style.display = 'block';
-  section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (!synthPanelRevealed) {
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  synthPanelRevealed = false; // reset for next run
 }
 
 // ============================================
