@@ -10,12 +10,12 @@
 //
 // Main -> Worker:
 //   { type: 'load', forceCandidate?: 'gemma'|'smollm'|null }
-//   { type: 'chat', requestId, messages, opts: { maxTokens, temperature } }
+//   { type: 'chat', requestId, messages, opts: { maxTokens, temperature, image? } }
 //   { type: 'abort', requestId }
 //
 // Worker -> Main:
 //   { type: 'progress', progress, status, file }
-//   { type: 'loaded', info: { id, label, family, device } }
+//   { type: 'loaded', info: { id, label, family, device, multimodal } }
 //   { type: 'load-error', message }
 //   { type: 'token', requestId, text }
 //   { type: 'chat-done', requestId, fullText }
@@ -26,7 +26,7 @@ const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers
 
 const MODEL_GEMMA_4_E2B = {
   id: 'onnx-community/gemma-4-E2B-it-ONNX',
-  label: 'gemma-4-E2B-it', family: 'gemma', size: '~3.1GB',
+  label: 'gemma-4-E2B-it', family: 'gemma', size: '~3.4GB',
   attempts: [
     { device: 'webgpu', dtype: 'q4f16' },
     { device: 'webgpu', dtype: 'q4' },
@@ -61,19 +61,18 @@ function pickCandidates(forceCandidate) {
 }
 
 let transformers = null;
+// SmolLM2 path: high-level pipeline
 let pipeline = null;
-let tokenizer = null;
+let pipelineTokenizer = null;
+// Gemma 4 path: low-level processor + conditional generation model
+// (required for image/audio inputs and exposes proper apply_chat_template).
+let gemmaProcessor = null;
+let gemmaModel = null;
 let modelInfo = null;
-const aborted = new Set(); // requestIds the main thread asked to cancel
+const aborted = new Set();
 
 function post(msg) { self.postMessage(msg); }
 
-// Throttled progress poster. Transformers.js fires progress callbacks for
-// every fetch chunk during the 3 GB Gemma 4 download — that's hundreds of
-// events per second. Forwarding each one to the main thread floods its
-// message queue and freezes the page. Coalesce to one message per 100ms,
-// but always flush 'initiate' / 'done' / 'ready' / final progress so the
-// UI doesn't miss state transitions.
 let lastProgressPostAt = 0;
 const PROGRESS_THROTTLE_MS = 100;
 function postProgress(payload, force = false) {
@@ -124,6 +123,65 @@ async function hasWorkingWebGPU() {
   } catch { return false; }
 }
 
+function makeProgressCb() {
+  return (data) => {
+    const pct = data.progress
+      ? Math.min(95, 10 + Math.round(data.progress * 0.85))
+      : 10;
+    const force = data.status !== 'progress';
+    postProgress({
+      type: 'progress', progress: pct,
+      status: formatStatus(data), file: data.file,
+    }, force);
+  };
+}
+
+async function loadGemma4(candidate, attempt) {
+  const { device, dtype } = attempt;
+  const { AutoProcessor, Gemma4ForConditionalGeneration } = transformers;
+
+  const processor = await AutoProcessor.from_pretrained(candidate.id, {
+    progress_callback: makeProgressCb(),
+  });
+  const model = await Gemma4ForConditionalGeneration.from_pretrained(candidate.id, {
+    device, dtype,
+    progress_callback: makeProgressCb(),
+  });
+
+  // Warmup with a tiny generation so first user query doesn't pay the
+  // shader-compile cost on the critical path.
+  post({ type: 'progress', progress: 98, status: 'Warming up model...' });
+  const warmupPrompt = processor.apply_chat_template(
+    [{ role: 'user', content: 'Hello' }],
+    { add_generation_prompt: true, enable_thinking: false }
+  );
+  const warmupInputs = await processor(warmupPrompt, null, { add_special_tokens: false });
+  await model.generate({ ...warmupInputs, max_new_tokens: 2, do_sample: false });
+
+  gemmaProcessor = processor;
+  gemmaModel = model;
+  pipeline = null;
+  pipelineTokenizer = null;
+}
+
+async function loadPipelineModel(candidate, attempt) {
+  const { device, dtype } = attempt;
+  const { pipeline: makePipe } = transformers;
+
+  const pipe = await makePipe('text-generation', candidate.id, {
+    device, dtype,
+    progress_callback: makeProgressCb(),
+  });
+
+  post({ type: 'progress', progress: 98, status: 'Warming up model...' });
+  await pipe('Hello', { max_new_tokens: 4, do_sample: false });
+
+  pipeline = pipe;
+  pipelineTokenizer = pipe.tokenizer;
+  gemmaProcessor = null;
+  gemmaModel = null;
+}
+
 async function loadModel(forceCandidate) {
   if (modelInfo) {
     post({ type: 'loaded', info: modelInfo });
@@ -131,15 +189,15 @@ async function loadModel(forceCandidate) {
   }
 
   try {
-    post({ progress: 1, status: 'Initializing Transformers.js v4...', type: 'progress' });
+    post({ type: 'progress', progress: 1, status: 'Initializing Transformers.js v4...' });
     transformers = await import(TRANSFORMERS_CDN);
     transformers.env.allowLocalModels = false;
     transformers.env.useBrowserCache = true;
 
-    post({ progress: 3, status: 'Detecting backends...', type: 'progress' });
+    post({ type: 'progress', progress: 3, status: 'Detecting backends...' });
     const hasWebGPU = await hasWorkingWebGPU();
 
-    post({ progress: 5, status: 'Selecting model...', type: 'progress' });
+    post({ type: 'progress', progress: 5, status: 'Selecting model...' });
 
     let lastDetail = 'unknown';
     const candidates = pickCandidates(forceCandidate);
@@ -155,36 +213,19 @@ async function loadModel(forceCandidate) {
             file: candidate.id,
           });
 
-          const { pipeline: makePipe } = transformers;
-          const pipe = await makePipe('text-generation', candidate.id, {
-            device, dtype,
-            progress_callback: (data) => {
-              const pct = data.progress
-                ? Math.min(95, 10 + Math.round(data.progress * 0.85))
-                : 10;
-              // Force-flush state transitions; throttle 'progress' chunks.
-              const force = data.status !== 'progress';
-              postProgress({
-                type: 'progress', progress: pct,
-                status: formatStatus(data), file: data.file,
-              }, force);
-            },
-          });
+          if (candidate.family === 'gemma') {
+            await loadGemma4(candidate, attempt);
+          } else {
+            await loadPipelineModel(candidate, attempt);
+          }
 
-          pipeline = pipe;
-          tokenizer = pipe.tokenizer;
           modelInfo = {
             id: candidate.id, label: candidate.label,
             family: candidate.family, device,
+            multimodal: candidate.family === 'gemma',
           };
 
-          post({ type: 'progress', progress: 98, status: 'Warming up model...' });
-          await pipe('Hello', { max_new_tokens: 4, do_sample: false });
-
-          post({
-            type: 'progress', progress: 100,
-            status: `Ready · ${candidate.label} (${device})`,
-          });
+          post({ type: 'progress', progress: 100, status: `Ready · ${candidate.label} (${device})` });
           post({ type: 'loaded', info: modelInfo });
           return;
         } catch (err) {
@@ -204,49 +245,125 @@ async function loadModel(forceCandidate) {
   }
 }
 
+async function chatViaPipeline({ requestId, messages, maxTokens, temperature }) {
+  const { TextStreamer } = transformers;
+  let fullText = '';
+
+  const streamer = new TextStreamer(pipelineTokenizer, {
+    skip_prompt: true,
+    skip_special_tokens: true,
+    callback_function: (text) => {
+      if (aborted.has(requestId)) throw new Error('aborted');
+      fullText += text;
+      post({ type: 'token', requestId, text });
+    },
+  });
+
+  const out = await pipeline(messages, {
+    max_new_tokens: maxTokens,
+    do_sample: temperature > 0,
+    temperature,
+    streamer,
+  });
+
+  if (!fullText) {
+    const last = out?.[0]?.generated_text;
+    if (Array.isArray(last)) {
+      const lastMsg = last[last.length - 1];
+      fullText = lastMsg?.content || '';
+    } else if (typeof last === 'string') {
+      fullText = last;
+    }
+  }
+
+  return fullText;
+}
+
+async function chatViaGemma({ requestId, messages, maxTokens, temperature, image }) {
+  const { TextStreamer, RawImage } = transformers;
+
+  // Convert chat messages to Gemma 4's content-block format. If the caller
+  // passed an `image` (Blob or URL), prepend it as the first block of the
+  // first user message — Gemma 4 docs require image *before* text.
+  const gemmaMessages = messages.map((m) => {
+    if (typeof m.content === 'string') {
+      return { role: m.role, content: [{ type: 'text', text: m.content }] };
+    }
+    return m; // already in block format
+  });
+  if (image && gemmaMessages.length > 0) {
+    const firstUserIdx = gemmaMessages.findIndex((m) => m.role === 'user');
+    if (firstUserIdx >= 0) {
+      gemmaMessages[firstUserIdx] = {
+        ...gemmaMessages[firstUserIdx],
+        content: [{ type: 'image' }, ...gemmaMessages[firstUserIdx].content],
+      };
+    }
+  }
+
+  const prompt = gemmaProcessor.apply_chat_template(gemmaMessages, {
+    add_generation_prompt: true,
+    enable_thinking: false,
+  });
+
+  let imageInput = null;
+  if (image) {
+    if (image instanceof Blob) {
+      imageInput = await RawImage.fromBlob(image);
+    } else if (typeof image === 'string') {
+      imageInput = await RawImage.read(image);
+    }
+  }
+
+  const inputs = await gemmaProcessor(prompt, imageInput, { add_special_tokens: false });
+
+  let fullText = '';
+  const streamer = new TextStreamer(gemmaProcessor.tokenizer, {
+    skip_prompt: true,
+    skip_special_tokens: true,
+    callback_function: (text) => {
+      if (aborted.has(requestId)) throw new Error('aborted');
+      fullText += text;
+      post({ type: 'token', requestId, text });
+    },
+  });
+
+  const outputs = await gemmaModel.generate({
+    ...inputs,
+    max_new_tokens: maxTokens,
+    do_sample: temperature > 0,
+    temperature,
+    top_p: 0.95,
+    top_k: 64,
+    streamer,
+  });
+
+  // Defensive fallback: if streaming yielded nothing, decode the new tokens.
+  if (!fullText) {
+    const promptLen = inputs.input_ids.dims.at(-1);
+    const newTokens = outputs.slice(null, [promptLen, null]);
+    const decoded = gemmaProcessor.batch_decode(newTokens, { skip_special_tokens: true });
+    fullText = (decoded?.[0] || '').trim();
+  }
+
+  return fullText;
+}
+
 async function runChat({ requestId, messages, opts }) {
-  if (!pipeline) {
+  if (!pipeline && !gemmaModel) {
     post({ type: 'chat-error', requestId, message: 'Model not loaded' });
     return;
   }
 
-  const { maxTokens = 512, temperature = 0.7 } = opts || {};
-  let fullText = '';
+  const { maxTokens = 512, temperature = 0.7, image } = opts || {};
 
   try {
-    const { TextStreamer } = transformers;
-    const streamer = new TextStreamer(tokenizer, {
-      skip_prompt: true,
-      skip_special_tokens: true,
-      callback_function: (text) => {
-        if (aborted.has(requestId)) {
-          throw new Error('aborted');
-        }
-        fullText += text;
-        post({ type: 'token', requestId, text });
-      },
-    });
-
-    const out = await pipeline(messages, {
-      max_new_tokens: maxTokens,
-      do_sample: temperature > 0,
-      temperature,
-      streamer,
-    });
-
-    // Fallback: if streaming produced nothing (e.g. tokenizer didn't emit
-    // intermediate text), recover the assistant content from the final
-    // generated_text array.
-    if (!fullText) {
-      const last = out?.[0]?.generated_text;
-      if (Array.isArray(last)) {
-        const lastMsg = last[last.length - 1];
-        fullText = lastMsg?.content || '';
-      } else if (typeof last === 'string') {
-        fullText = last;
-      }
+    let fullText;
+    if (gemmaModel) {
+      fullText = await chatViaGemma({ requestId, messages, maxTokens, temperature, image });
+    } else {
+      fullText = await chatViaPipeline({ requestId, messages, maxTokens, temperature });
     }
-
     post({ type: 'chat-done', requestId, fullText });
   } catch (err) {
     post({ type: 'chat-error', requestId, message: describeError(err) });

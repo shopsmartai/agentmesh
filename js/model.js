@@ -73,7 +73,7 @@ class ModelRuntime {
     if (!this.ready) throw new Error('Model not loaded');
 
     const requestId = this.nextRequestId++;
-    const { maxTokens, temperature, onToken, signal } = opts;
+    const { maxTokens, temperature, onToken, signal, image } = opts;
 
     const promise = new Promise((resolve, reject) => {
       this.chatPending.set(requestId, { onToken, resolve, reject });
@@ -87,14 +87,22 @@ class ModelRuntime {
       else signal.addEventListener('abort', onAbort, { once: true });
     }
 
+    // image may be a Blob (preferred — structured-cloned to the worker) or
+    // a URL string. Plain Blobs serialize fine across postMessage without
+    // needing to be transferred.
     this.worker.postMessage({
       type: 'chat',
       requestId,
       messages,
-      opts: { maxTokens, temperature },
+      opts: { maxTokens, temperature, image },
     });
 
     return promise;
+  }
+
+  /** True if the loaded model can accept image input (Gemma 4 family). */
+  get supportsImages() {
+    return this.modelLabel?.startsWith('gemma-4') === true;
   }
 
   abort() {
