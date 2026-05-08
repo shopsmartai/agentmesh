@@ -5,13 +5,13 @@
 // Use ESM CDN for Transformers.js v3 (WebGPU support)
 const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1';
 
-// Model candidates in order of preference. We try Gemma 4 first; if not yet
-// published on the Hub for ONNX/WebGPU, fall back to known-good small models
-// so the app still runs (we annotate the UI clearly when we fall back).
+// Model candidates in order of preference.
+// We start with the smallest known-good ONNX/WebGPU models so the app reliably
+// runs on any device. Larger models can be added once verified.
 const MODEL_CANDIDATES = [
-  { id: 'onnx-community/gemma-3-1b-it-ONNX-GQA', label: 'gemma-3-1b-instruct', family: 'gemma' },
-  { id: 'HuggingFaceTB/SmolLM2-1.7B-Instruct', label: 'smollm2-1.7b', family: 'smollm' },
-  { id: 'onnx-community/Llama-3.2-1B-Instruct', label: 'llama-3.2-1b', family: 'llama' },
+  { id: 'HuggingFaceTB/SmolLM2-360M-Instruct', label: 'smollm2-360m', family: 'smollm', size: '~250MB' },
+  { id: 'HuggingFaceTB/SmolLM2-135M-Instruct', label: 'smollm2-135m', family: 'smollm', size: '~92MB' },
+  { id: 'Xenova/Qwen1.5-0.5B-Chat', label: 'qwen1.5-0.5b', family: 'qwen', size: '~400MB' },
 ];
 
 class ModelRuntime {
@@ -26,9 +26,12 @@ class ModelRuntime {
 
   async loadTransformersJS() {
     const tf = await import(TRANSFORMERS_CDN);
-    // Configure: don't use local model paths, fetch from HF Hub
+    // Configure: don't use local model paths, fetch from HF Hub.
+    // Disable browser Cache API — it fails with "Unexpected internal error" on
+    // some localhost / disk-constrained Chrome configurations. Without cache
+    // the model redownloads each load, but at least the app works.
     tf.env.allowLocalModels = false;
-    tf.env.useBrowserCache = true;
+    tf.env.useBrowserCache = false;
     return tf;
   }
 
@@ -87,15 +90,19 @@ class ModelRuntime {
         onProgress({ progress: 100, status: `Ready · ${candidate.label}` });
         return { id: candidate.id, label: candidate.label, family: candidate.family };
       } catch (err) {
-        console.warn(`[model] candidate ${candidate.id} failed:`, err);
+        // Surface as much info as possible — Transformers.js + ORT errors
+        // are sometimes plain numbers, sometimes Error objects.
+        const detail = err?.message || err?.toString?.() || JSON.stringify(err);
+        console.warn(`[model] candidate ${candidate.id} failed:`, detail, err);
         lastError = err;
         onProgress({
           progress: 6,
-          status: `${candidate.label} unavailable, trying next...`,
+          status: `${candidate.label} unavailable: ${String(detail).slice(0, 80)}`,
         });
       }
     }
-    throw new Error(`All model candidates failed. Last error: ${lastError?.message || 'unknown'}`);
+    const lastDetail = lastError?.message || lastError?.toString?.() || JSON.stringify(lastError) || 'unknown';
+    throw new Error(`All model candidates failed. Last error: ${lastDetail}`);
   }
 
   formatStatus(data) {
