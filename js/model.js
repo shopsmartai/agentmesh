@@ -8,11 +8,15 @@ const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers
 // Model candidates in order of preference.
 // On production hosts we try Gemma first (qualifies for the Gemma challenge),
 // then fall back to known-good small ONNX/WebGPU models so the app always runs.
+//
+// `dtypes` is the list of quantizations to try for that candidate, in order.
+// q4f16 = 4-bit weights, fp16 activations -> best WebGPU compatibility
+// q4    = pure int4 -> may lack WebGPU kernels for some models (e.g. Gemma)
+// fp16  = full precision fp16 -> always works but largest
 const MODEL_CANDIDATES = [
-  { id: 'onnx-community/gemma-3-1b-it-ONNX-GQA', label: 'gemma-3-1b-it', family: 'gemma', size: '~1.2GB' },
-  { id: 'HuggingFaceTB/SmolLM2-1.7B-Instruct', label: 'smollm2-1.7b', family: 'smollm', size: '~1GB' },
-  { id: 'HuggingFaceTB/SmolLM2-360M-Instruct', label: 'smollm2-360m', family: 'smollm', size: '~250MB' },
-  { id: 'HuggingFaceTB/SmolLM2-135M-Instruct', label: 'smollm2-135m', family: 'smollm', size: '~92MB' },
+  { id: 'onnx-community/gemma-3-1b-it-ONNX-GQA', label: 'gemma-3-1b-it', family: 'gemma', size: '~860MB', dtypes: ['q4f16', 'q4'] },
+  { id: 'HuggingFaceTB/SmolLM2-360M-Instruct', label: 'smollm2-360m', family: 'smollm', size: '~270MB', dtypes: ['q4f16', 'q4'] },
+  { id: 'HuggingFaceTB/SmolLM2-135M-Instruct', label: 'smollm2-135m', family: 'smollm', size: '~95MB', dtypes: ['q4f16', 'q4'] },
 ];
 
 class ModelRuntime {
@@ -55,55 +59,59 @@ class ModelRuntime {
     onProgress({ progress: 5, status: 'Selecting model...' });
 
     let lastError = null;
+    let lastDetail = 'unknown';
     for (const candidate of MODEL_CANDIDATES) {
-      try {
-        onProgress({
-          progress: 6,
-          status: `Loading ${candidate.label}...`,
-          file: candidate.id,
-        });
+      const dtypes = candidate.dtypes || ['q4f16', 'q4'];
+      for (const dtype of dtypes) {
+        try {
+          onProgress({
+            progress: 6,
+            status: `Loading ${candidate.label} (${dtype})...`,
+            file: candidate.id,
+          });
 
-        const { pipeline } = this.transformers;
-        const pipe = await pipeline('text-generation', candidate.id, {
-          device: 'webgpu',
-          dtype: 'q4',
-          progress_callback: (data) => {
-            // data: { status, file, progress, loaded, total }
-            const pct = data.progress
-              ? Math.min(95, 10 + Math.round(data.progress * 0.85))
-              : 10;
-            onProgress({
-              progress: pct,
-              status: this.formatStatus(data),
-              file: data.file,
-            });
-          },
-        });
+          const { pipeline } = this.transformers;
+          const pipe = await pipeline('text-generation', candidate.id, {
+            device: 'webgpu',
+            dtype,
+            progress_callback: (data) => {
+              // data: { status, file, progress, loaded, total }
+              const pct = data.progress
+                ? Math.min(95, 10 + Math.round(data.progress * 0.85))
+                : 10;
+              onProgress({
+                progress: pct,
+                status: this.formatStatus(data),
+                file: data.file,
+              });
+            },
+          });
 
-        this.pipeline = pipe;
-        this.tokenizer = pipe.tokenizer;
-        this.modelId = candidate.id;
-        this.modelLabel = candidate.label;
-        this.ready = true;
+          this.pipeline = pipe;
+          this.tokenizer = pipe.tokenizer;
+          this.modelId = candidate.id;
+          this.modelLabel = candidate.label;
+          this.ready = true;
 
-        onProgress({ progress: 98, status: 'Warming up model...' });
-        await this.warmup();
+          onProgress({ progress: 98, status: 'Warming up model...' });
+          await this.warmup();
 
-        onProgress({ progress: 100, status: `Ready · ${candidate.label}` });
-        return { id: candidate.id, label: candidate.label, family: candidate.family };
-      } catch (err) {
-        // Surface as much info as possible — Transformers.js + ORT errors
-        // are sometimes plain numbers, sometimes Error objects.
-        const detail = err?.message || err?.toString?.() || JSON.stringify(err);
-        console.warn(`[model] candidate ${candidate.id} failed:`, detail, err);
-        lastError = err;
-        onProgress({
-          progress: 6,
-          status: `${candidate.label} unavailable: ${String(detail).slice(0, 80)}`,
-        });
+          onProgress({ progress: 100, status: `Ready · ${candidate.label}` });
+          return { id: candidate.id, label: candidate.label, family: candidate.family };
+        } catch (err) {
+          // Surface as much info as possible — Transformers.js + ORT errors
+          // are sometimes plain numbers, sometimes Error objects.
+          const detail = this.describeError(err);
+          console.warn(`[model] ${candidate.id} dtype=${dtype} failed:`, detail, err);
+          lastError = err;
+          lastDetail = `${candidate.label} (${dtype}): ${detail}`;
+          onProgress({
+            progress: 6,
+            status: `${candidate.label} ${dtype} unavailable: ${String(detail).slice(0, 80)}`,
+          });
+        }
       }
     }
-    const lastDetail = lastError?.message || lastError?.toString?.() || JSON.stringify(lastError) || 'unknown';
     throw new Error(`All model candidates failed. Last error: ${lastDetail}`);
   }
 
@@ -131,6 +139,25 @@ class ModelRuntime {
   fileLabel(file) {
     if (!file) return 'file';
     return file.split('/').pop();
+  }
+
+  /**
+   * Best-effort error description. ORT sometimes throws a raw number
+   * (a pointer into WASM memory), so look at type and known fields.
+   */
+  describeError(err) {
+    if (err == null) return 'unknown';
+    if (typeof err === 'number') {
+      return `ORT runtime error code ${err} (likely missing WebGPU kernel for this dtype)`;
+    }
+    if (typeof err === 'string') return err;
+    if (err.message) return err.message;
+    if (err.name) return err.name;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
   }
 
   async warmup() {
