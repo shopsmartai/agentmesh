@@ -20,32 +20,96 @@ async function fetchWithTimeout(url, opts = {}) {
 // WIKIPEDIA
 // ============================================
 
+// Strip stopwords + filler so a verbose sub-question becomes a
+// search-friendly phrase. Wikipedia's srsearch ranks via TF-IDF, so
+// generic question-shaped filler ("fundamental", "core", "current",
+// "various") dilutes the topic signal and pulls off-topic articles to
+// the top. Aggressive filtering makes srsearch return the topic article
+// reliably.
+const WIKI_STOPWORDS = new Set([
+  // grammar
+  'what','is','are','was','were','the','a','an','of','to','for','and','or','in','on',
+  'at','by','with','from','about','between','do','does','did','how','why','when','where',
+  'which','who','whom','whose','this','that','these','those','can','should','would','could',
+  'may','might','will','shall','have','has','had','its','it','as','than','then','some',
+  'any','all','most','more','less','few','many','their','your','my','our','us','you','i',
+  'me','they','them','if','so','also','such',
+  // generic question-shape filler that question-style sub-questions love
+  'define','definition','describe','description','explain','explanation','provide','provided',
+  'tell','give','given','core','main','key','primary','secondary','fundamental','basic',
+  'basics','simple','complex','various','different','common','typical','general','specific',
+  'particular','associated','related','involved','involving','utilized','utilization','usage',
+  'used','using','use','employed','exemplified','exemplifies','example','examples','exemplary',
+  'instance','instances','case','cases','context','contexts','contextual','aspect','aspects',
+  'feature','features','element','elements','process','processes','processing','procedure',
+  'procedures','step','steps','part','parts','component','components',
+  // generic "limitation/tradeoff" filler
+  'limit','limits','limitation','limitations','tradeoff','tradeoffs','trade-offs','trade-off',
+  'constraint','constraints','consideration','considerations','factor','factors','requirement',
+  'requirements','condition','conditions','environmental','environment','impact','impacts',
+  'effect','effects','consequence','consequences',
+  // generic adjective-y filler
+  'current','recent','modern','advanced','enhanced','improved','enable','enables','enabled',
+  'enabling','support','supports','supported','supporting','contains','containing','include',
+  'includes','included',
+]);
+
+function condenseWikiQuery(q) {
+  if (!q) return '';
+  const words = q
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !WIKI_STOPWORDS.has(w));
+  if (words.length === 0) return '';
+
+  // Wikipedia's srsearch ranks by TF-IDF: rare words dominate. Long words
+  // tend to be the topical nouns (e.g. "photosynthesis", "transformer",
+  // "WebGPU"); short common words ("core", "process") dilute the signal
+  // and pull off-topic articles to the top.
+  // Strategy: keep the 4 longest content words while preserving order.
+  const sortedByLength = [...words].sort((a, b) => b.length - a.length);
+  const keep = new Set(sortedByLength.slice(0, 4));
+  return words.filter((w) => keep.has(w)).join(' ');
+}
+
 export async function searchWikipedia(query, { limit = 3 } = {}) {
-  // Step 1: search for matching pages
-  const searchUrl = `https://en.wikipedia.org/w/api.php?action=opensearch&format=json&origin=*&limit=${limit}&search=${encodeURIComponent(query)}`;
+  // Step 1: full-text search via the action API. srsearch matches article
+  // *content*, not just titles, so verbose sub-questions actually return
+  // hits. opensearch (the prior implementation) was title-prefix only.
+  const condensed = condenseWikiQuery(query) || query;
+  const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&srlimit=${limit}&srsearch=${encodeURIComponent(condensed)}`;
   const searchRes = await fetchWithTimeout(searchUrl);
   if (!searchRes.ok) throw new Error('wikipedia search failed');
-  const [, titles, descriptions, urls] = await searchRes.json();
+  const data = await searchRes.json();
+  const hits = data?.query?.search || [];
 
-  if (!titles?.length) {
+  if (!hits.length) {
     return { source: 'wikipedia', query, results: [] };
   }
 
-  // Step 2: fetch summaries for top matches
+  // Step 2: fetch readable summaries for the top matches via the REST
+  // summary endpoint (cleaner extract than srsearch's snippet).
   const summaries = await Promise.all(
-    titles.slice(0, limit).map(async (title, i) => {
+    hits.slice(0, limit).map(async (hit) => {
+      const title = hit.title;
       try {
         const sumUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
         const sumRes = await fetchWithTimeout(sumUrl);
         if (!sumRes.ok) throw new Error('summary fetch failed');
-        const data = await sumRes.json();
+        const sum = await sumRes.json();
         return {
-          title: data.title || title,
-          extract: data.extract || descriptions[i] || '',
-          url: data.content_urls?.desktop?.page || urls[i],
+          title: sum.title || title,
+          // Strip srsearch HTML highlight tags from the snippet fallback.
+          extract: sum.extract || (hit.snippet || '').replace(/<[^>]+>/g, ''),
+          url: sum.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`,
         };
-      } catch (err) {
-        return { title, extract: descriptions[i] || '', url: urls[i] };
+      } catch {
+        return {
+          title,
+          extract: (hit.snippet || '').replace(/<[^>]+>/g, ''),
+          url: `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`,
+        };
       }
     })
   );
