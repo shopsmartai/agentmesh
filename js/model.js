@@ -6,12 +6,13 @@
 const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1';
 
 // Model candidates in order of preference.
-// We start with the smallest known-good ONNX/WebGPU models so the app reliably
-// runs on any device. Larger models can be added once verified.
+// On production hosts we try Gemma first (qualifies for the Gemma challenge),
+// then fall back to known-good small ONNX/WebGPU models so the app always runs.
 const MODEL_CANDIDATES = [
+  { id: 'onnx-community/gemma-3-1b-it-ONNX-GQA', label: 'gemma-3-1b-it', family: 'gemma', size: '~1.2GB' },
+  { id: 'HuggingFaceTB/SmolLM2-1.7B-Instruct', label: 'smollm2-1.7b', family: 'smollm', size: '~1GB' },
   { id: 'HuggingFaceTB/SmolLM2-360M-Instruct', label: 'smollm2-360m', family: 'smollm', size: '~250MB' },
   { id: 'HuggingFaceTB/SmolLM2-135M-Instruct', label: 'smollm2-135m', family: 'smollm', size: '~92MB' },
-  { id: 'Xenova/Qwen1.5-0.5B-Chat', label: 'qwen1.5-0.5b', family: 'qwen', size: '~400MB' },
 ];
 
 class ModelRuntime {
@@ -27,11 +28,12 @@ class ModelRuntime {
   async loadTransformersJS() {
     const tf = await import(TRANSFORMERS_CDN);
     // Configure: don't use local model paths, fetch from HF Hub.
-    // Disable browser Cache API — it fails with "Unexpected internal error" on
-    // some localhost / disk-constrained Chrome configurations. Without cache
-    // the model redownloads each load, but at least the app works.
+    // Browser Cache API works on real https origins; only fails on some
+    // localhost / disk-constrained Chrome configurations. So enable cache
+    // on production hosts and disable on localhost for reliability.
     tf.env.allowLocalModels = false;
-    tf.env.useBrowserCache = false;
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    tf.env.useBrowserCache = !isLocal;
     return tf;
   }
 
