@@ -1,21 +1,19 @@
 <!--
 Cover image: assets/og-cover.png
-Tags: devchallenge, gemmachallenge, gemma, webgpu, javascript
+Tags: devchallenge, gemmachallenge, gemma, webgpu
 Category: "Build With Gemma 4"
-Title (under 70 chars): "I Ran a Five-Agent Research Swarm in a Browser Tab on Gemma 4"
+Title (under 70 chars): "I Ran a Five Agent Research Swarm in a Browser Tab on Gemma 4"
 -->
 
-# I Ran a Five-Agent Research Swarm in a Browser Tab on Gemma 4
+# I Ran a Five Agent Research Swarm in a Browser Tab on Gemma 4
 
-> No server. No API key. No install. Just Chrome, ~3 GB of weights, and seven engineering problems I had to solve before the demo would render its first token.
+Live demo: https://shopsmartai.github.io/agentmesh/
 
-**Live demo:** https://shopsmartai.github.io/agentmesh/  *(Chrome 113+ with WebGPU; first run downloads ~3.1 GB, cached after)*
+You'll need Chrome 113 or newer with a real GPU. The first time you load the page, it downloads about 3.1 GB of model weights. After that the model lives in your browser cache and reload is instant. The whole thing is open source under MIT: https://github.com/shopsmartai/agentmesh
 
-**Repo (MIT):** https://github.com/shopsmartai/agentmesh
+I asked it "What is photosynthesis?" and waited 210 seconds. Five AI agents running on my laptop GPU passed work to each other and produced this:
 
-I asked it *"What is photosynthesis?"* and 210 seconds later got this back:
-
-```markdown
+```
 ## Definition and Core Process
 
 Photosynthesis is a biological process utilized by organisms such as plants,
@@ -40,54 +38,41 @@ the organisms' metabolism.
 
   Light Spectrum Limitation: Photosynthetic organisms are restricted ...
 
-**Bottom line:** Photosynthesis converts solar energy into chemical fuel for
-autotrophic organisms, and its efficiency is bounded by light absorption
-characteristics.
+Bottom line: Photosynthesis converts solar energy into chemical fuel for
+autotrophic organisms, and its efficiency is bounded by light absorption.
 ```
 
-That output came from five Gemma 4 E2B agents running in sequence on my GPU. It's grounded in three Wikipedia articles (Photosynthesis, Photopigment, Photosynthetic efficiency) — not training-data recall.
+That answer is grounded in three Wikipedia articles. It is not the model recalling something from training. It is the model reading notes and writing about them.
 
-This post is about the engineering. What it took to get here, what broke along the way, and what I'd do differently.
-
----
+I want to talk about how it actually works, why I picked Gemma 4 for this, and the seven things that broke along the way before the demo would render its first token.
 
 ## What it actually does
 
+There are five agents in the pipeline. They look like this:
+
 ```
-            ┌──────────┐
-            │ PLANNER  │   "decompose this query into 3 angles"
-            └────┬─────┘
-                 │
-       ┌─────────┼─────────┐
-       ▼         ▼         ▼
-   ┌──────┐  ┌──────┐  ┌──────┐
-   │  W1  │  │  W2  │  │  W3  │   each picks a tool
-   │      │  │      │  │      │   (wiki / HN / arxiv / DDG),
-   └──┬───┘  └──┬───┘  └──┬───┘   reads notes, drafts an answer
-      └─────────┼─────────┘
-                ▼
-           ┌─────────────┐
-           │ SYNTHESIZER │   combines into structured markdown
-           └─────────────┘
+            Planner
+              |
+       /------+------\
+       |      |      |
+   Worker1 Worker2 Worker3
+       |      |      |
+       \------+------/
+              |
+         Synthesizer
 ```
 
-User types a question → Planner emits three sub-questions → three Workers each search Wikipedia (or Hacker News, DuckDuckGo, arXiv) → Synthesizer combines into `## sections` with a `**Bottom line:**` closer.
+The Planner reads your question and writes three sub-questions. Each Worker takes one sub-question, picks a research tool (Wikipedia, Hacker News, arXiv, or DuckDuckGo), reads the results, and writes a focused answer using only what it found. The Synthesizer reads all three Worker outputs and combines them into a structured markdown response with a one line takeaway at the end.
 
-Everything runs in `model.worker.js`, isolated from the UI thread. Tokens stream back over `postMessage` so the page never freezes — not even during ORT WebGPU shader compilation, which takes ~30–60 seconds the first time.
+Everything runs inside one Web Worker. The page itself stays interactive even while the model is loading or generating. Tokens stream back to the page over postMessage and render live.
 
-Source code is ~1,500 lines of vanilla JS. No framework, no build step, no `npm install`. Open `index.html` directly with `npx http-server .` and it runs.
+The codebase is roughly 1500 lines of plain JavaScript. No React. No build step. No npm install. You can clone it, run `npx http-server .`, and it works.
 
----
+## Why I picked Gemma 4 E2B specifically
 
-## Why Gemma 4 E2B specifically
+I spent some time trying smaller models. SmolLM2 360M loads in under a minute. It would have made the demo much faster. I went with Gemma 4 E2B anyway. Three reasons.
 
-Multi-agent systems collapse without three properties. Gemma 4 E2B is the smallest open model that ships all three for browser deployment.
-
-### 1. Strong instruction-following
-
-The planner has to emit three numbered sub-questions, no preamble, in the user's domain. The synthesizer has to follow a specific markdown shape. Smaller models drift, hallucinate, or copy the example prompt verbatim.
-
-Here's Gemma 4 E2B's planner output for *"How does WebGPU enable in-browser AI inference?"*:
+**Reason one. It follows instructions.** The Planner has to write exactly three numbered sub-questions, with no preamble, in the topic the user asked about. SmolLM2 either copied the example from my prompt verbatim, or wrote JSON I had to recover with regex, or drifted off topic. Gemma 4 just does what you ask. Here is its actual Planner output for "How does WebGPU enable in browser AI inference?":
 
 ```
 1. What is WebGPU and how does it facilitate in-browser AI inference?
@@ -97,76 +82,43 @@ Here's Gemma 4 E2B's planner output for *"How does WebGPU enable in-browser AI i
    AI inference?
 ```
 
-Three distinct angles (definition / examples / limitations), all topic-anchored, perfectly formatted. SmolLM2-360M (the lite-mode fallback) for the same prompt produced unstructured JSON-shaped output that my parser had to recover from with regex.
+Three sub-questions. Three different angles. All anchored to the topic. I did not have to argue with the model.
 
-### 2. Hallucination resistance — the actual differentiator
+**Reason two. It refuses to make things up.** This is the property I actually care about most. I tell the Workers in the prompt: do not invent facts. If the research notes do not answer the sub-question, say so directly.
 
-Workers are told explicitly: *"Do not invent facts."*
+Gemma 4 obeys this. When Wikipedia returns articles that do not address the question, the Worker writes something like "the provided research notes do not contain information about this." It does not paper over the gap with confident sounding nonsense from training data.
 
-Gemma 4 E2B obeys. When Wikipedia returns articles whose content doesn't address the sub-question, the worker says so:
+SmolLM2 does paper over the gap. It writes plausible content that sounds right and is wrong. For a research demo, that is the difference between something I can show people and something I cannot.
 
-> "The provided research notes do not contain information about how WebGPU and WebGL are implemented or utilized in practical examples for deploying ML inference on the web."
+**Reason three. It actually fits in a browser.** Gemma 4 E2B at q4f16 is about 3.1 GB of weights. Chrome can hold that in a Web Worker alongside the ONNX runtime and a streaming UI. The next size up, Gemma 4 E4B, is about 6 GB and starts running into memory pressure. The bigger Gemma 4 variants (26B and 31B) are server class. E2B is the only one that ships in a browser tab today.
 
-SmolLM2 in the same situation produces confident-sounding text that's confabulated from training data. The fact that I can put this in a research demo without it lying back at users is the *actual* product property worth shipping.
+E2B also has a 128K context window. I am not using all of it yet, but the headroom is there.
 
-### 3. Browser footprint
+## The seven things that broke
 
-Gemma 4 E2B q4f16 is ~3.1 GB of weights — Chrome can hold that in a Web Worker alongside ORT WebGPU, the COI service worker, and a streaming UI. Gemma 4 E4B (~6 GB) and 31B (server-class) can't.
+I expected this to take a weekend. It took a week. I want to walk through each problem because the engineering is the actually interesting part of this post.
 
-E2B is also *the only* Gemma 4 variant where 128 K context fits browser memory. That matters because in the swarm, agents could share full notes between phases (currently we summarize because the prompts are still small, but the headroom is there).
+### 1. The page was not cross origin isolated
 
----
+GitHub Pages does not let you set custom HTTP headers. Without two specific headers (Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy), the browser will not enable SharedArrayBuffer. The ONNX runtime needs SharedArrayBuffer to run on WebGPU. Without it, every model load failed with raw numeric errors that pointed into the WebAssembly heap (literally numbers like `11514632`) and gave me nothing to debug.
 
-## The seven engineering problems
+I shipped a service worker (adapted from a small open source library called coi-serviceworker) that intercepts every response and adds the missing headers. The first time a visitor loads the page, the service worker installs and the page reloads itself. After that, the page is cross origin isolated and SharedArrayBuffer becomes available.
 
-I expected this to be a weekend. It became a week. Each problem stalled the demo for hours; surfacing them is the actual point of this post.
+If you build something like this on GitHub Pages, you will hit this. Plan for it.
 
-### 1. The page wasn't cross-origin isolated
+### 2. The tab froze for sixty seconds during model load
 
-GitHub Pages doesn't let you set custom HTTP headers. Without `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy`, the page isn't *cross-origin isolated*, which means `SharedArrayBuffer` is unavailable. ORT WebGPU and threaded WASM both need SAB. Without it, ORT throws raw numeric pointer errors (literally `11514632`, `12077640` — pointers into the WASM heap) for every model + backend combination.
+The first time the ONNX runtime loads a model on WebGPU, it has to compile shaders for every operation in the network. For Gemma 4 E2B that takes anywhere from thirty seconds to over a minute. If you do this on the main thread, the page becomes unresponsive. Chrome eventually offers to kill the page.
 
-**Fix:** ship a service worker (`coi-serviceworker.js`, MIT, adapted from [gzuidhof/coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker)) that intercepts every response and injects the headers. First load registers + reloads; second load is isolated.
-
-```js
-event.respondWith(
-  fetch(request).then((response) => {
-    const newHeaders = new Headers(response.headers);
-    newHeaders.set('Cross-Origin-Embedder-Policy', 'credentialless');
-    newHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
-    newHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
-    return new Response(response.body, {
-      status: response.status,
-      headers: newHeaders,
-    });
-  })
-);
-```
-
-Verify in DevTools: `self.crossOriginIsolated` must be `true`. If it's not, nothing else matters.
-
-### 2. WebGPU compile froze the tab for 60 seconds
-
-ORT compiles WebGPU shaders for Gemma 4 E2B for ~30–60 seconds on first run. On the main thread, that means a frozen tab. Chrome eventually offers to kill the page.
-
-**Fix:** isolate the entire model lifetime in a Web Worker. Main thread keeps a thin proxy:
-
-```js
-this.worker = new Worker(
-  new URL('./model.worker.js', import.meta.url),
-  { type: 'module' }
-);
-this.worker.postMessage({ type: 'load', forceCandidate });
-```
-
-Tokens flow back over `postMessage` and re-emit through the existing `chat(messages, opts)` interface. `agents.js` and `main.js` don't change.
+I moved the entire model life cycle into a Web Worker. The page now sees a thin proxy that exposes `model.load(onProgress)` and `model.chat(messages, opts)`. The proxy talks to the worker over postMessage. The worker downloads weights, compiles shaders, runs inference. The page stays responsive throughout.
 
 ### 3. The worker flooded the main thread
 
-Transformers.js fires `progress_callback` for every fetch chunk. Streaming a 1.5 GB file = hundreds of events per second. Forwarding each one via `postMessage` floods the main thread's message queue. The page freezes despite the actual work being in a worker.
+After moving the model into the worker, the page froze again. Different reason this time. Transformers.js fires a progress callback for every chunk of the download. With a 1.5 GB file, that is hundreds of events per second. I was forwarding each one to the main thread via postMessage. The main thread message queue saturated and the page stopped painting.
 
-**Fix:** throttle to one message per 100 ms. Force-flush state transitions:
+The fix is one variable and one comparison. Throttle the progress messages to one every 100 milliseconds. Always send state changes immediately (started, finished, ready) but coalesce the actual progress percentages.
 
-```js
+```
 let lastProgressPostAt = 0;
 function postProgress(payload, force = false) {
   const now = performance.now();
@@ -177,114 +129,88 @@ function postProgress(payload, force = false) {
 }
 ```
 
-### 4. The Cache API kept poisoning itself
+After this change, the page stayed smooth for the entire 3 GB download.
 
-When a Gemma 4 attempt failed mid-download, Transformers.js cached the partial blob. The next load fetched the corrupt blob from cache and ORT threw a numeric error on it. Reloading didn't help; the cache was the source of corruption.
+### 4. The browser cache was poisoning itself
 
-**Fix in v3:** disable the Cache API entirely (`tf.env.useBrowserCache = false`) and rely on HTTP `Cache-Control` headers from HF Hub. **Fix in v4 (current):** the bug doesn't exist — partial downloads aren't committed.
+When a model load failed mid download (which happened a lot during early debugging), Transformers.js was caching the partial blob. The next page load fetched the corrupt blob from cache and the runtime threw on it. Reloading did not help. Disabling JavaScript caching did not help. The cache was the source of the corruption and it persisted across sessions.
 
-### 5. Transformers.js v3.5.1 was broken
+Two fixes. Disable the cache layer entirely on older versions, then upgrade to Transformers.js 4.x where partial downloads do not get committed to the cache in the first place. The 4.x behavior is what I want and what shipped.
 
-Every model + every backend (`webgpu/q4`, `webgpu/q4f16`, `wasm/q4`) failed with raw numeric ORT errors. SmolLM2 — which I knew worked elsewhere — failed the same way.
+### 5. Transformers.js 3.5.1 was just broken
 
-**Fix:** pin `@huggingface/transformers@4.2.0`. The diagnostic was process: pin to a version the reference impl ([nico-martin/gemma4-browser-extension](https://github.com/nico-martin/gemma4-browser-extension)) uses, retest. Worked first try.
+Every model and every backend combination failed with raw numeric errors. SmolLM2 (which works fine elsewhere) failed the same way as Gemma 4. I spent a day thinking my code was wrong before I noticed it was the library version.
 
-### 6. Wikipedia's `opensearch` returned nothing for verbose questions
+Pinned to 4.2.0. Same code, same models, all loaded first try. The diagnostic process was simple: find a known working public project that uses Gemma 4 and copy their version pin. nico-martin's gemma4-browser-extension uses 4.2.0, so I tried that.
 
-Pressure-testing on the live site exposed that even *"What is photosynthesis?"* was getting 2 of 3 workers reporting "research notes are empty." The planner generates verbose sub-questions like *"What is the fundamental definition of photosynthesis and its core chemical processes?"* — Wikipedia's `opensearch` API does title-prefix matching, and that string doesn't title-match.
+### 6. Wikipedia search returned nothing for verbose questions
 
-**Fix part A:** switch to `srsearch` (full-text):
+I was pressure testing the live site after deploying. Even simple queries like "What is photosynthesis?" were producing answers like "research notes are empty." Two of three Workers were giving up.
 
-```js
-const url = `https://en.wikipedia.org/w/api.php?action=query&list=search`
-          + `&format=json&origin=*&srlimit=3`
-          + `&srsearch=${encodeURIComponent(condensed)}`;
-```
+The bug was upstream. The Planner generates verbose sub-questions like "What is the fundamental definition of photosynthesis and its core chemical processes?" Wikipedia's classic search API does title prefix matching only. That string is not the prefix of any Wikipedia article title, so it returned zero results.
 
-**Fix part B:** strip filler from the query so TF-IDF ranks correctly. A 60-word stopword list removes question-shape filler ("fundamental", "core", "exemplified", "associated", "current", "environmental"). Verified result: `"fundamental photosynthesis chemical processes"` now returns `Photosynthesis` as result #1.
+Three changes fixed this:
 
-**Fix part C:** add a relevance gate. If no Wikipedia result *title* contains any distinctive word from the query, treat as empty so the cascade falls through to DuckDuckGo and arXiv. This catches the "loosely-related noise" case where Wikipedia returns three articles that share *some* terms but don't address the question.
+First, switch to the full text search API instead of the title prefix one. This made every realistic question return some Wikipedia article.
 
-### 7. Multimodal didn't ship — and the failure is its own story
+Second, strip filler words from the search query before sending it. Words like "fundamental", "core", "exemplified", "current", "associated" are common across all questions and they hurt search relevance. I built a stopword list of about 60 of these, leaving only the topic words. After this, "photosynthesis chemical processes" reliably ranks the actual Photosynthesis article first.
 
-Gemma 4 E2B is multimodal in theory. The recipe in the model card is `AutoProcessor` + `Gemma4ForConditionalGeneration`, with a per-component `dtype` config:
+Third, add a relevance gate. If the search returns three articles but none of their titles contain a meaningful word from the query, treat that as zero results and cascade to a different source. This was the case for niche cross domain queries like "WebGPU vs WebGL for ML inference," where Wikipedia returned articles like "Predictive coding" and "Groq" that share some terminology but do not address the question. The cascade then tries DuckDuckGo, then arXiv.
 
-```js
-const dtype = {
-  audio_encoder: 'fp16',     // q4f16 lacks WebGPU kernels
-  vision_encoder: 'fp16',
-  embed_tokens: 'q4f16',
-  decoder_model_merged: 'q4f16',
-};
-```
+### 7. Multimodal did not ship
 
-I implemented it. The load path failed silently in the worker — falling through the candidate fallback chain to SmolLM2. Two bugs in that path:
+This is the honest one. Gemma 4 E2B is multimodal. You can drop an image into the prompt and the model will describe what it sees. I tried to wire this up. It did not work in the time I had.
 
-1. The `processor()` signature is `(prompt, image, audio, options)` — four args. My calls were three, so the options object was being interpreted as audio input.
-2. Even after fixing the signature, q4f16 audio encoder weights threw ORT errors on some Chrome drivers.
+The recipe in the model card uses a different API than what I had been using. Instead of the simple `pipeline('text-generation', ...)` call, you have to instantiate `Gemma4ForConditionalGeneration` directly along with `AutoProcessor`, and configure different precision settings for each component (the audio encoder and vision encoder need fp16, the decoder and embeddings can stay at q4f16).
 
-I rolled back. The multimodal code paths stay in `model.worker.js` (`loadGemma4`, `chatViaGemma`) as documented future work. The current production demo runs text-only.
+I implemented all of this. The load kept falling through to SmolLM2 instead. There were two bugs in the path. The processor signature has four arguments and I was passing three (so the options object got interpreted as audio input). And the q4f16 audio encoder weights were throwing on some Chrome drivers.
 
-This is the kind of thing that doesn't land in a hackathon time-box but lands cleanly in a follow-up. Better than shipping it broken.
+Both are fixable. I did not get them fixed in time. The multimodal code is still in the repository under `loadGemma4` and `chatViaGemma` in the worker file. The current production demo is text only. I will pick this up after the challenge.
 
----
+## What I want to be honest about
 
-## What I didn't build (and why)
+A few things people might infer from the demo that are not actually true:
 
-A few things worth naming explicitly so you don't infer them from the demo:
+The agents are not running in parallel. WebGPU LLM inference is single stream per session. The five agents take turns on one GPU. The visualization with the connecting lines and flowing particles makes it look parallel but logically. The actual GPU work serializes.
 
-- **The agents are not parallel.** WebGPU LLM inference is single-stream per session. The five-agent pipeline visualization implies parallelism; in reality the workers timeshare on one GPU. *Logical* parallelism, not physical. Real parallelism would require multiple ORT sessions or a multi-tenant inference server, which kills the "browser-only" pitch.
+The synthesis is good but not amazing. Multi agent works best when the workers research genuinely different sources and bring back distinct evidence. Mine often all land on Wikipedia and read variants of the same article. So the synthesis ends up being a nicely structured restatement of the workers, not something that transcends them. The way to fix this is worker specialization (different prompts for different roles) and Gemma 4's native tool calling (which I have wired but did not ship). Future work.
 
-- **The synth is good, not great.** Multi-agent works best when workers research *different* sources and bring back genuinely distinct evidence. Mine often all land on Wikipedia and read variants of the same article — so the synth ends up restating the workers, not transcending them. Fixable with native Gemma 4 tool-calling (which I have wired but didn't ship), proper specialization per worker, and a wider tool catalog.
+Niche cross domain queries return "no findings." This is the relevance gate doing its job. If you ask about a topic that does not have a Wikipedia article and is not in arXiv either, all the workers honestly report the gap. That is correct behavior for a demo about hallucination resistance, but it is also a real UX limit.
 
-- **Niche cross-domain queries return "no findings."** *"WebGPU vs WebGL for ML inference"* — Wikipedia doesn't have an article for that. arXiv has tangentially-relevant papers. The relevance gate fires, the cascade exhausts, and Gemma 4 honestly reports the gap. That's a *correct* failure mode, not a bug — it's the alternative to fabrication. But it's a UX limit users will hit.
-
-- **3 GB is a wall.** No way around it for first-time visitors. We gate behind an explicit click and persist via the browser Cache API so reload is free. There's a `?model=smollm` lite mode (~270 MB) that loads SmolLM2-360M for visitors who want to see the swarm without the commitment. Quality is noticeably lower; the architecture is identical.
-
----
+The 3 GB download is a wall. There is no way around it for first time visitors. I gate the download behind an explicit click and persist via the browser cache so reload is free. There is also a lite mode at `?model=smollm` which loads SmolLM2 360M (about 270 MB) for visitors who want to see the swarm UX without the commitment. The output quality is noticeably lower in lite mode, because SmolLM2 confabulates. The architecture is identical.
 
 ## Try it
 
-**Default (Gemma 4 E2B, ~3.1 GB first run):** [https://shopsmartai.github.io/agentmesh/](https://shopsmartai.github.io/agentmesh/)
+Default with Gemma 4 (3.1 GB first load): https://shopsmartai.github.io/agentmesh/
 
-**Lite mode (SmolLM2-360M, ~270 MB):** [https://shopsmartai.github.io/agentmesh/?model=smollm](https://shopsmartai.github.io/agentmesh/?model=smollm)
+Lite mode with SmolLM2 (270 MB): https://shopsmartai.github.io/agentmesh/?model=smollm
 
-**Source:** [github.com/shopsmartai/agentmesh](https://github.com/shopsmartai/agentmesh) — MIT, ~1,500 LOC, no build step.
+Source code: https://github.com/shopsmartai/agentmesh
 
-**Suggested first queries** (these have good Wikipedia coverage and produce clean outputs):
+These are good first queries because Wikipedia covers them well:
 
-- *"What is photosynthesis?"*
-- *"What is the difference between Mixture of Experts and Dense models?"*
-- *"How do enzymes work?"*
+- What is photosynthesis?
+- What is the difference between Mixture of Experts and Dense models?
+- How do enzymes work?
 
-Niche cross-domain queries (e.g. *"latest 2026 transformer papers"*) will hit the honest "no findings" path. That's intentional.
+If you ask something niche like "latest 2026 transformer papers" you will hit the honest "no findings" path. That is intentional, not a bug.
 
----
+## What I would build next
 
-## What's next
+Four things, in priority order, if I keep working on this past the challenge.
 
-If I keep working on this past the challenge:
+Native Gemma 4 tool calling. The model has a structured tool call format built into its chat template. Right now I use a simple heuristic to pick a tool. Switching to the native format would make tool selection more accurate and add another concrete reason the project specifically uses Gemma 4 (other models do not have this).
 
-1. **Native Gemma 4 tool-calling.** Replace the heuristic tool router with `apply_chat_template({ tools: [...] })`. Gemma 4's chat template supports structured tool calls natively. Adds another rubric line to the "specifically Gemma 4" argument.
+Multimodal, properly. Resume the work I rolled back. Drop an image into the query. The Planner sees it. The Workers research what is in it. The Synthesizer ties it together with text findings. The code is in the repo and the failure modes are known.
 
-2. **Multimodal, properly.** Resume the `Gemma4ForConditionalGeneration` work. Drop an image into the query, the planner sees it, the swarm researches what's in it. The code paths exist; the bugs are in the per-component dtype + processor signature space and are debuggable.
+Worker specialization. Right now all three workers use the same prompt template. Differentiating them ("you focus on definitions", "you find counter evidence", "you look for examples") would actually use the multi agent shape. Today, the swarm is more theater than function for many queries.
 
-3. **Worker specialization.** Right now all three workers use the same prompt template. Differentiating them ("you focus on definitions", "you focus on counter-evidence") would actually use the multi-agent shape.
+A persistent local research notebook. Save past queries. Build context across sessions. Make the 3 GB download amortize across many uses instead of being a one shot cost. This is the path that turns the project from a demo into something useful for real research work.
 
-4. **Persistent local research notebook.** OPFS-backed history so the model amortizes its 3 GB across many uses, and earlier queries inform later ones. This is the path that makes the project useful for real work, not just demos.
+I am not committing to any of these. What I do next depends on the response to this post. If a hospital CTO emails me about clinical literature review, I will go faster on the notebook. If five engineers fork the repo, I will go faster on the tool calling and multimodal pieces. If neither, this stays a portfolio piece I am happy with.
 
-I'm not committing to any of these yet — depends on response to this post. If a hospital CTO emails about clinical-literature review, I'll go faster on (4). If five engineers fork the repo, I'll go faster on (1) and (2).
+## Thanks
 
----
+To Google DeepMind for releasing Gemma 4 with weights small enough to actually fit in a browser tab. To Hugging Face for Transformers.js, especially the 4.2.0 release that finally worked end to end. To gzuidhof for the coi-serviceworker library which solved the cross origin isolation problem in about five minutes. To nico-martin for publishing the gemma4-browser-extension code, which was my reference for which library version actually loads this model. To the webml-community Gemma 4 demo whose minified bundle taught me the per component dtype trick I tried to ship and rolled back.
 
-## Acknowledgements
-
-- [Gemma 4](https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/) — Google DeepMind
-- [Transformers.js](https://huggingface.co/docs/transformers.js) — Hugging Face, version 4.2.0
-- [coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker) — gzuidhof, MIT
-- [nico-martin/gemma4-browser-extension](https://github.com/nico-martin/gemma4-browser-extension) — the reference impl that proved the v4 API at version 4.2.0 with this exact model
-- [webml-community/Gemma-4-WebGPU](https://huggingface.co/spaces/webml-community/Gemma-4-WebGPU) — the official multimodal demo whose bundle taught me the per-component dtype trick
-
----
-
-*MIT-licensed. Fork it, modify it, ship something better. The challenge submission is the floor, not the ceiling.*
+The code is MIT. Fork it. Rip out the parts you want. If you build something better with it, I would love to see what.
