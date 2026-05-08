@@ -1,0 +1,103 @@
+// ============================================
+// AGENTMESH // Settings (localStorage-backed)
+// ============================================
+// Inference mode + cloud API key state, persisted only in the user's
+// browser. Nothing is sent to any server we control. The key never
+// touches our infrastructure.
+//
+// Modes:
+//   'local' — default. Runs Gemma 4 E2B in a Web Worker on the user's GPU.
+//             Slow but private, free, offline-capable after first load.
+//   'cloud' — uses the user's own Google AI Studio key to call the
+//             Gemini API. Fast, higher quality, privacy goes through
+//             Google. The key lives only in this browser's localStorage.
+// ============================================
+
+const KEYS = {
+  mode: 'agentmesh.mode',
+  apiKey: 'agentmesh.apiKey',
+  cloudModel: 'agentmesh.cloudModel',
+};
+
+const VALID_MODES = new Set(['local', 'cloud']);
+
+// Default cloud model. Gemma 4 is offered through Google AI Studio under a
+// few names; we default to the 27B dense variant which gives the best
+// general-purpose answer quality on the free tier. Users can override.
+const DEFAULT_CLOUD_MODEL = 'gemma-3-27b-it';
+// Fallback if the chosen model 404s. Keeps the demo working when Google
+// renames or sunsets a specific variant.
+export const CLOUD_MODEL_FALLBACKS = [
+  'gemma-3-27b-it',
+  'gemma-3-12b-it',
+  'gemma-3-4b-it',
+];
+
+const listeners = new Set();
+
+function notify() {
+  for (const cb of listeners) {
+    try { cb(getSettings()); } catch (e) { console.warn('[settings] listener threw:', e); }
+  }
+}
+
+export function onChange(cb) {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+
+export function getMode() {
+  const m = localStorage.getItem(KEYS.mode);
+  return VALID_MODES.has(m) ? m : 'local';
+}
+
+export function setMode(mode) {
+  if (!VALID_MODES.has(mode)) return;
+  localStorage.setItem(KEYS.mode, mode);
+  notify();
+}
+
+export function getApiKey() {
+  return localStorage.getItem(KEYS.apiKey) || '';
+}
+
+export function setApiKey(key) {
+  const trimmed = (key || '').trim();
+  if (trimmed) {
+    localStorage.setItem(KEYS.apiKey, trimmed);
+  } else {
+    localStorage.removeItem(KEYS.apiKey);
+  }
+  notify();
+}
+
+export function getCloudModel() {
+  return localStorage.getItem(KEYS.cloudModel) || DEFAULT_CLOUD_MODEL;
+}
+
+export function setCloudModel(modelId) {
+  const trimmed = (modelId || '').trim();
+  if (trimmed) {
+    localStorage.setItem(KEYS.cloudModel, trimmed);
+  } else {
+    localStorage.removeItem(KEYS.cloudModel);
+  }
+  notify();
+}
+
+export function getSettings() {
+  return {
+    mode: getMode(),
+    apiKey: getApiKey(),
+    cloudModel: getCloudModel(),
+  };
+}
+
+/**
+ * True iff the app can run a query *right now*. Local mode requires the
+ * worker to have loaded a model (caller checks separately). Cloud mode
+ * requires the user to have pasted a key.
+ */
+export function isCloudReady() {
+  return getMode() === 'cloud' && !!getApiKey();
+}

@@ -4,6 +4,7 @@
 
 import { model } from './model.js';
 import { runSwarm } from './agents.js';
+import * as settings from './settings.js';
 import {
   showScreen,
   updateLoading,
@@ -83,6 +84,8 @@ async function runBootSequence() {
   document.getElementById('ascii-logo').textContent = ASCII_LOGO;
   const bootLog = document.getElementById('boot-log');
   const initBtn = document.getElementById('boot-init-btn');
+  const bootActions = document.getElementById('boot-actions');
+  const bootSettingsBtn = document.getElementById('boot-settings-btn');
 
   const gpu = await checkWebGPU();
   const hasWebgpu = gpu.ok;
@@ -105,12 +108,39 @@ async function runBootSequence() {
 
   await wait(400);
 
-  if (!hasWebgpu) {
+  // Cloud mode does not need WebGPU. If the user already has cloud + key
+  // configured we let them through even without a GPU.
+  if (!hasWebgpu && !settings.isCloudReady()) {
     setTimeout(() => showScreen('no-webgpu-screen'), 1500);
-  } else {
-    initBtn.style.display = 'inline-flex';
-    initBtn.addEventListener('click', startModelLoad);
+    return;
   }
+
+  // Wire the boot settings button — opens the same panel used on the main
+  // screen, so the user can switch to cloud mode before any 3 GB download.
+  bootSettingsBtn?.addEventListener('click', openSettingsPanel);
+
+  // Reflect the chosen mode in the init button label so the user knows
+  // what they're about to trigger. Updates whenever settings change.
+  const updateInitBtn = () => {
+    if (settings.isCloudReady()) {
+      initBtn.innerHTML = '[ START_CLOUD_MODE ] <kbd>⏎</kbd>';
+    } else if (settings.getMode() === 'cloud') {
+      initBtn.innerHTML = '[ ADD_API_KEY_IN_SETTINGS ]';
+      initBtn.disabled = true;
+      return;
+    } else {
+      initBtn.innerHTML = '[ INITIALIZE_SWARM.exe ]';
+    }
+    initBtn.disabled = false;
+  };
+  settings.onChange(updateInitBtn);
+  updateInitBtn();
+
+  if (bootActions) bootActions.style.display = 'flex';
+  initBtn.addEventListener('click', () => {
+    if (initBtn.disabled) return;
+    startModelLoad();
+  });
 }
 
 // ============================================
@@ -118,6 +148,19 @@ async function runBootSequence() {
 // ============================================
 
 async function startModelLoad() {
+  // Cloud mode short-circuit: if the user has chosen cloud + has a key,
+  // we skip the 3 GB local download entirely. The runtime is ready
+  // immediately and the user goes straight to the main screen.
+  if (settings.isCloudReady()) {
+    const info = model.setupCloudMode();
+    const versionEl = document.querySelector('.header-version');
+    if (versionEl && info?.label) {
+      versionEl.textContent = `v1.0 · ${info.label} (cloud)`;
+    }
+    showMainScreen();
+    return;
+  }
+
   showScreen('loading-screen');
 
   // Rotate tips
@@ -132,10 +175,9 @@ async function startModelLoad() {
     updateLoading({ progress: 1, status: 'Loading Transformers.js...' });
     const info = await model.load(updateLoading);
 
-    // Update header label with actual model loaded
     const versionEl = document.querySelector('.header-version');
     if (versionEl && info.label) {
-      versionEl.textContent = `v1.0 · ${info.label}`;
+      versionEl.textContent = `v1.0 · ${info.label} (local)`;
     }
 
     clearInterval(tipInterval);
@@ -158,6 +200,135 @@ let currentRun = null;
 function showMainScreen() {
   showScreen('main-screen');
   setupQueryInterface();
+  setupSettingsPanel();
+  updateHeaderModeLabel();
+}
+
+// Update the header version label to reflect the active mode.
+function updateHeaderModeLabel() {
+  const versionEl = document.querySelector('.header-version');
+  if (!versionEl) return;
+  const mode = settings.getMode();
+  if (mode === 'cloud') {
+    const cloudModel = settings.getCloudModel();
+    versionEl.textContent = `v1.0 · ${cloudModel} (cloud)`;
+  } else {
+    const label = model.modelLabel || 'gemma-4-E2B';
+    versionEl.textContent = `v1.0 · ${label} (local)`;
+  }
+}
+
+// ============================================
+// SETTINGS PANEL
+// ============================================
+
+// Idempotent — safe to call multiple times. Each screen that mounts the
+// settings panel calls this. We attach listeners only on first invocation.
+let settingsWired = false;
+function openSettingsPanel() {
+  setupSettingsPanel();
+  const panel = document.getElementById('settings-panel');
+  if (panel) panel.hidden = false;
+  // Force a re-render of the inputs from current settings state.
+  document.dispatchEvent(new CustomEvent('agentmesh:settings-render'));
+}
+
+function setupSettingsPanel() {
+  const panel = document.getElementById('settings-panel');
+  if (!panel) return;
+  const closeBtn = document.getElementById('settings-close');
+  const backdrop = panel.querySelector('.settings-backdrop');
+  const modeLocal = document.getElementById('mode-local');
+  const modeCloud = document.getElementById('mode-cloud');
+  const cloudGroup = document.getElementById('settings-cloud-group');
+  const keyInput = document.getElementById('settings-key');
+  const modelSel = document.getElementById('settings-model');
+  const saveBtn = document.getElementById('settings-save');
+  const clearBtn = document.getElementById('settings-clear');
+  const status = document.getElementById('settings-status');
+  const headerOpenBtn = document.getElementById('settings-btn');
+
+  // Reflect current state into the panel inputs.
+  const renderState = () => {
+    const mode = settings.getMode();
+    if (modeLocal) modeLocal.checked = mode === 'local';
+    if (modeCloud) modeCloud.checked = mode === 'cloud';
+    if (cloudGroup) cloudGroup.style.display = mode === 'cloud' ? '' : 'none';
+    if (keyInput) keyInput.value = settings.getApiKey();
+    if (modelSel) modelSel.value = settings.getCloudModel();
+    if (status) {
+      const ready = settings.isCloudReady();
+      if (mode === 'cloud') {
+        status.className = ready ? 'settings-status ok' : 'settings-status err';
+        status.textContent = ready
+          ? `Cloud mode ready. Using ${settings.getCloudModel()}.`
+          : 'Paste your Google AI Studio API key above to enable cloud mode.';
+      } else {
+        status.className = 'settings-status';
+        status.textContent = '';
+      }
+    }
+  };
+
+  if (settingsWired) {
+    renderState();
+    return;
+  }
+  settingsWired = true;
+
+  document.addEventListener('agentmesh:settings-render', renderState);
+
+  headerOpenBtn?.addEventListener('click', () => { panel.hidden = false; renderState(); });
+  closeBtn?.addEventListener('click', () => { panel.hidden = true; });
+  backdrop?.addEventListener('click', () => { panel.hidden = true; });
+
+  modeLocal?.addEventListener('change', () => {
+    if (modeLocal.checked) {
+      settings.setMode('local');
+      renderState();
+      updateHeaderModeLabel();
+    }
+  });
+  modeCloud?.addEventListener('change', () => {
+    if (modeCloud.checked) {
+      settings.setMode('cloud');
+      renderState();
+      updateHeaderModeLabel();
+    }
+  });
+
+  modelSel?.addEventListener('change', () => {
+    settings.setCloudModel(modelSel.value);
+    renderState();
+    updateHeaderModeLabel();
+  });
+
+  saveBtn?.addEventListener('click', () => {
+    const v = (keyInput?.value || '').trim();
+    if (!v) {
+      if (status) {
+        status.className = 'settings-status err';
+        status.textContent = 'Empty key. Paste your Google AI Studio key first.';
+      }
+      return;
+    }
+    settings.setApiKey(v);
+    if (settings.getMode() === 'cloud') {
+      model.setupCloudMode();
+      model.ready = true;
+    }
+    renderState();
+    updateHeaderModeLabel();
+  });
+
+  clearBtn?.addEventListener('click', () => {
+    settings.setApiKey('');
+    if (keyInput) keyInput.value = '';
+    renderState();
+    updateHeaderModeLabel();
+  });
+
+  renderState();
 }
 
 // Currently attached image (Blob) — only used when the loaded model is

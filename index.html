@@ -35,9 +35,14 @@
     <div class="boot-content">
       <pre class="ascii-logo" id="ascii-logo"></pre>
       <div class="boot-log" id="boot-log"></div>
-      <button id="boot-init-btn" class="terminal-btn glow-cyan" style="display: none;">
-        [ INITIALIZE_SWARM.exe ]
-      </button>
+      <div class="boot-actions" id="boot-actions" style="display: none;">
+        <button id="boot-init-btn" class="terminal-btn glow-cyan">
+          [ INITIALIZE_SWARM.exe ]
+        </button>
+        <button id="boot-settings-btn" class="terminal-btn-sm" title="Pick local vs cloud mode before loading">
+          [ settings ]
+        </button>
+      </div>
     </div>
   </div>
 
@@ -89,6 +94,8 @@
         <span class="header-stat" id="agent-count-stat">0 agents</span>
         <span class="divider">|</span>
         <span class="header-stat" id="token-count-stat">0 tokens</span>
+        <span class="divider">|</span>
+        <button id="settings-btn" class="header-link" title="Settings (mode + API key)">[ settings ]</button>
         <span class="divider">|</span>
         <a href="https://github.com/shopsmartai/agentmesh" target="_blank" class="header-link">github</a>
       </div>
@@ -183,6 +190,62 @@
         <span class="footer-link">made for the gemma 4 challenge</span>
       </div>
     </footer>
+  </div>
+
+  <!-- Settings panel — overlay that can appear on any screen.
+       Toggled by the [ settings ] buttons on the boot or main screens. -->
+  <div id="settings-panel" class="settings-panel" hidden>
+    <div class="settings-backdrop"></div>
+    <div class="settings-inner">
+      <div class="settings-header">
+        <span class="prompt">root@agentmesh:~$</span>
+        <span class="prompt-cmd">settings</span>
+        <button id="settings-close" class="settings-close" title="Close">[ x ]</button>
+      </div>
+
+      <fieldset class="settings-group">
+        <legend>// inference mode</legend>
+
+        <label class="settings-mode">
+          <input type="radio" name="mode" value="local" id="mode-local">
+          <span class="mode-label">
+            <strong>Local</strong> · Gemma 4 E2B running on your GPU
+            <small>~3 GB first download, cached after. ~3-5 min/query. Full privacy, nothing leaves your tab.</small>
+          </span>
+        </label>
+
+        <label class="settings-mode">
+          <input type="radio" name="mode" value="cloud" id="mode-cloud">
+          <span class="mode-label">
+            <strong>Cloud</strong> · Gemma via Google AI Studio (BYOK)
+            <small>~30 sec/query. Higher quality. Requires your own free API key. Key stays in this browser only.</small>
+          </span>
+        </label>
+      </fieldset>
+
+      <fieldset class="settings-group" id="settings-cloud-group">
+        <legend>// google ai studio key</legend>
+        <p class="settings-help">
+          Free key, no credit card required. Get one at
+          <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">aistudio.google.com/app/apikey</a>.
+          Stored only in this browser's localStorage. Sent only to Google.
+        </p>
+        <div class="settings-row">
+          <input type="password" id="settings-key" class="settings-key-input" placeholder="paste your API key here" autocomplete="off" spellcheck="false">
+          <button id="settings-save" class="terminal-btn-sm">[ save ]</button>
+          <button id="settings-clear" class="terminal-btn-sm">[ clear ]</button>
+        </div>
+        <div class="settings-row">
+          <label for="settings-model" class="settings-help">cloud model:</label>
+          <select id="settings-model" class="settings-key-input" style="max-width: 240px;">
+            <option value="gemma-3-27b-it">gemma-3-27b-it (default)</option>
+            <option value="gemma-3-12b-it">gemma-3-12b-it (faster)</option>
+            <option value="gemma-3-4b-it">gemma-3-4b-it (fastest)</option>
+          </select>
+        </div>
+        <div class="settings-status" id="settings-status"></div>
+      </fieldset>
+    </div>
   </div>
 
   <!-- Module entry -->
