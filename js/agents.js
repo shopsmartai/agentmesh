@@ -11,37 +11,80 @@ import { runTool, formatResultsForModel, TOOLS } from './tools.js';
 // ============================================
 // PROMPTS
 // ============================================
+//
+// AgentMesh runs three perspective agents on the user's question — each
+// argues a different stance on the same topic. The synthesizer then shows
+// where they agreed, where they disagreed, and reconciles. This is the
+// thing the architecture is for: forcing the model to genuinely consider
+// opposing views before answering, instead of collapsing to one voice.
 
-const PLANNER_SYSTEM = `You produce exactly 3 short search phrases about the user's topic.
+const PLANNER_SYSTEM = `You extract the core topic from the user's question and produce 3 short search queries, one per perspective.
 
-Each phrase is 4 to 8 words. No question marks. No filler words like "fundamental", "core", "current", "various". Just the topic plus one angle.
+Output exactly 3 lines in this order:
+1. <topic> criticism drawbacks problems
+2. <topic> benefits advantages success
+3. <topic> real world usage examples
 
-Use these 3 angles in order:
-1. <topic> definition
-2. <topic> examples
-3. <topic> limitations
+Each line is 4 to 7 words. The user's main topic MUST appear in each line. No question marks. No preamble. No JSON. No commentary.`;
 
-Output exactly 3 lines, numbered "1.", "2.", "3.". The topic word from the user's question MUST appear in each line. No preamble. No JSON. No commentary.`;
-
-const WORKER_SYSTEM = `You answer ONE sub-question using ONLY the research notes provided.
+const WORKER_PERSPECTIVES = [
+  {
+    role: 'skeptic',
+    label: 'SKEPTIC',
+    system: `You are the skeptic on a research panel. Your job is to find the strongest counter-arguments, criticisms, and real failure modes about the user's topic.
 
 Rules:
-- Read the notes carefully. Quote or paraphrase specific facts from them.
-- If the notes do not contain enough information, say so directly. Do not invent facts.
-- Write 2-4 short sentences in plain prose. No bullets, no headings.
-- Stay strictly on the sub-question — do not drift to related topics.
-- Maximum 80 words.`;
-
-const SYNTHESIZER_SYSTEM = `You combine findings from several research agents into one clear answer.
+- Use ONLY the research notes provided. If the notes are thin or off-topic, say so directly. Do not invent.
+- Be sharp and specific. Generic concerns are weak; concrete criticisms with named consequences are strong.
+- Quote or paraphrase real facts from the notes.
+- Write in plain prose. 2 to 4 short sentences. No bullets, no headings.
+- Maximum 80 words.`,
+  },
+  {
+    role: 'advocate',
+    label: 'ADVOCATE',
+    system: `You are the advocate on a research panel. Your job is to make the strongest case in favor of the user's topic — find concrete benefits, success stories, and evidence of real value.
 
 Rules:
-- Write a complete, well-structured response to the original question in markdown.
-- Use TWO or THREE \`##\` section headings that map to the major themes in the findings.
-- Inside each section, use short paragraphs or bullet points (whichever reads better).
-- Only use facts present in the agents' findings — never invent.
-- If findings disagree or are thin on a topic, acknowledge it briefly.
-- End with a single line starting with "**Bottom line:**" that gives a one-sentence takeaway.
-- No preamble like "Here is the answer". Start directly with content.`;
+- Use ONLY the research notes provided. If the notes are thin or off-topic, say so directly. Do not invent.
+- Be substantive. "It is good" is not an argument; specific upsides are.
+- Quote or paraphrase real facts from the notes.
+- Write in plain prose. 2 to 4 short sentences. No bullets, no headings.
+- Maximum 80 words.`,
+  },
+  {
+    role: 'pragmatist',
+    label: 'PRAGMATIST',
+    system: `You are the pragmatist on a research panel. Your job is to describe how the user's topic actually plays out in practice — who uses it, when it works, when it does not, real-world trade-offs.
+
+Rules:
+- Use ONLY the research notes provided. If the notes are thin or off-topic, say so directly. Do not invent.
+- Focus on concrete usage and real outcomes. Avoid abstract evaluation.
+- Quote or paraphrase real facts from the notes.
+- Write in plain prose. 2 to 4 short sentences. No bullets, no headings.
+- Maximum 80 words.`,
+  },
+];
+
+const SYNTHESIZER_SYSTEM = `You are combining the views of three agents who took different stances on the user's question (skeptic, advocate, pragmatist) into a single useful response.
+
+Output structure (use exactly these section headings):
+
+## Where they agreed
+List facts or claims that survived from all three perspectives. If they did not really agree, say so.
+
+## Where they disagreed
+Describe the points where the skeptic and advocate took opposing views. Present each side fairly in 1 to 2 sentences.
+
+## What this means
+Reconcile what the agents wrote. Use only facts they introduced. Do not bring in new claims.
+
+End with a single line starting with "**Bottom line:**" that captures the takeaway in one sentence.
+
+Rules:
+- Quote sparingly. Paraphrase mostly.
+- If the agents had thin or no real evidence, say that honestly. That is a meaningful finding.
+- Maximum 400 words across the whole response. No preamble.`;
 
 // ============================================
 // HELPERS
@@ -187,12 +230,12 @@ async function runToolWithFallback(primary, query, { onUpdate } = {}) {
 export async function planQuery(model, query, { onUpdate, image } = {}) {
   onUpdate?.({ status: 'thinking', text: '' });
 
-  // When an image is attached, ask the planner to anchor on the image
-  // content as well as any text query. Image appears as a content block so
-  // multimodal Gemma 4 sees it directly.
+  // The user's question goes to three perspective workers (skeptic /
+  // advocate / pragmatist). The planner's job is to pull out the topic
+  // and emit one search query per perspective.
   const userText = image
-    ? `Image attached above.\nTopic from user prompt: "${query}"\n\nOutput exactly 3 short search phrases about THIS image now.`
-    : `User's topic: "${query}"\n\nOutput exactly 3 short search phrases now.`;
+    ? `Image attached above.\nUser's question: "${query}"\n\nOutput the 3 search queries now, one per perspective (criticism / benefits / real-world usage).`
+    : `User's question: "${query}"\n\nOutput the 3 search queries now, one per perspective (criticism / benefits / real-world usage).`;
 
   const messages = [
     { role: 'system', content: PLANNER_SYSTEM },
@@ -221,13 +264,13 @@ export async function planQuery(model, query, { onUpdate, image } = {}) {
     plan = [];
   }
 
-  // Fallback if model fails to produce a parseable list. We pick three
-  // distinct lenses on the topic to ensure the workers don't all duplicate.
+  // Fallback if model fails to produce a parseable list. Order matters:
+  // index 0 is the skeptic's search, 1 the advocate's, 2 the pragmatist's.
   if (plan.length === 0) {
     plan = [
-      `Background and definition: ${query}`,
-      `Real-world examples or use cases related to: ${query}`,
-      `Trade-offs, limitations, or criticisms of: ${query}`,
+      `${query} criticism drawbacks problems`,
+      `${query} benefits advantages success`,
+      `${query} real world usage examples`,
     ];
   }
 
@@ -242,26 +285,29 @@ export async function planQuery(model, query, { onUpdate, image } = {}) {
 // WORKER
 // ============================================
 
-export async function runWorker(model, subQuestion, agentId, { onUpdate } = {}) {
+export async function runWorker(model, subQuestion, agentId, originalQuery, { onUpdate } = {}) {
+  // Each worker has a fixed perspective (skeptic / advocate / pragmatist).
+  // The agentId picks which perspective; the planner's per-perspective
+  // search phrase drives the tool query.
+  const perspective = WORKER_PERSPECTIVES[agentId] || WORKER_PERSPECTIVES[0];
+
   // Step 1: pick a primary tool, run it, cascade through fallbacks if empty
   const primary = pickToolForQuestion(subQuestion);
   const { toolUsed: toolName, toolResult } = await runToolWithFallback(primary, subQuestion, { onUpdate });
   const notes = formatResultsForModel(toolResult);
 
-  // Step 2: ask model to synthesize a focused answer
+  // Step 2: ask the model to write the perspective's response
   onUpdate?.({ status: 'thinking', text: '' });
 
   const messages = [
-    { role: 'system', content: WORKER_SYSTEM },
+    { role: 'system', content: perspective.system },
     {
       role: 'user',
-      content: `Sub-question: ${subQuestion}\n\nResearch notes:\n${notes}\n\nWrite the answer now.`,
+      content: `User's question: "${originalQuery}"\n\nSearch angle for this perspective: ${subQuestion}\n\nResearch notes:\n${notes}\n\nWrite your view now.`,
     },
   ];
 
   let streamed = '';
-  // Greedy decoding + tighter cap. Workers should be 2-4 sentences max;
-  // longer outputs are usually padding.
   const raw = await model.chat(messages, {
     maxTokens: 160,
     temperature: 0,
@@ -272,9 +318,24 @@ export async function runWorker(model, subQuestion, agentId, { onUpdate } = {}) 
   });
 
   const answer = (raw || streamed).trim();
-  onUpdate?.({ status: 'done', text: answer, toolUsed: toolName, sources: toolResult.results || [] });
+  onUpdate?.({
+    status: 'done',
+    text: answer,
+    toolUsed: toolName,
+    sources: toolResult.results || [],
+    role: perspective.role,
+    label: perspective.label,
+  });
 
-  return { agentId, subQuestion, answer, toolUsed: toolName, sources: toolResult.results || [] };
+  return {
+    agentId,
+    subQuestion,
+    answer,
+    toolUsed: toolName,
+    sources: toolResult.results || [],
+    role: perspective.role,
+    label: perspective.label,
+  };
 }
 
 // ============================================
@@ -285,7 +346,7 @@ export async function synthesize(model, query, workerResults, { onUpdate } = {})
   onUpdate?.({ status: 'thinking', text: '' });
 
   const findingsText = workerResults
-    .map((w, i) => `### Agent ${i + 1} (${w.toolUsed}) on "${w.subQuestion}":\n${w.answer}`)
+    .map((w) => `### ${w.label || 'AGENT'} (searched ${w.toolUsed} for "${w.subQuestion}"):\n${w.answer}`)
     .join('\n\n');
 
   const messages = [
@@ -340,11 +401,16 @@ export async function runSwarm(model, query, callbacks = {}) {
     // to workers — they research the planner's sub-questions in text.
     const plan = await planQuery(model, query, { onUpdate: onPlanner, image });
 
-    // Phase 2: workers in parallel
-    plan.forEach((subQ, i) => onWorkerStart(i, subQ));
+    // Phase 2: workers in parallel. Each worker has a fixed perspective
+    // (skeptic / advocate / pragmatist) keyed by index. Passing the
+    // perspective label lets the UI render distinct cards per agent.
+    plan.forEach((subQ, i) => {
+      const persp = WORKER_PERSPECTIVES[i] || WORKER_PERSPECTIVES[0];
+      onWorkerStart(i, subQ, { role: persp.role, label: persp.label });
+    });
 
     const workerPromises = plan.map((subQ, i) =>
-      runWorker(model, subQ, i, {
+      runWorker(model, subQ, i, query, {
         onUpdate: (u) => onWorkerUpdate(i, u),
       }).then((result) => {
         onWorkerDone(i, result);

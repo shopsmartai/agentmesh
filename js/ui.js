@@ -128,14 +128,17 @@ export function updatePlannerCard({ status, text, plan }) {
   }
 }
 
-export function renderWorkerCard(index, subQuestion) {
+export function renderWorkerCard(index, subQuestion, perspective) {
   const grid = $('#swarm-active');
   const card = document.createElement('div');
-  card.className = 'agent-card';
+  // Tag the card with the role so we can style each perspective distinctly.
+  const role = perspective?.role || 'worker';
+  const label = perspective?.label || `WORKER · agent[${index + 1}]`;
+  card.className = `agent-card role-${role}`;
   card.id = `agent-${index + 1}`;
   card.innerHTML = `
     <div class="agent-header">
-      <span class="agent-id">WORKER · agent[${index + 1}]</span>
+      <span class="agent-id">${escapeHtml(label)} · agent[${index + 1}]</span>
       <span class="agent-status">queued</span>
     </div>
     <div class="agent-task">${escapeHtml(subQuestion)}</div>

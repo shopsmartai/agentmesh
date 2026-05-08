@@ -345,8 +345,8 @@ async function runQuery(query) {
             }, 50);
           }
         },
-        onWorkerStart: (i, subQ) => {
-          renderWorkerCard(i, subQ);
+        onWorkerStart: (i, subQ, perspective) => {
+          renderWorkerCard(i, subQ, perspective);
           viz?.addNode(`agent-${i + 1}`, 'worker');
           viz?.setConnection('agent-planner', `agent-${i + 1}`, 0.4, 'cyan');
         },

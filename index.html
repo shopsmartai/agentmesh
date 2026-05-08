@@ -104,9 +104,9 @@
         <textarea
           id="query-input"
           class="query-input"
-          placeholder="// Type your research question and press Cmd+Enter to spawn the swarm
-// Example: What are the trade-offs between WebGPU and WebGL for ML inference?
-// Drop an image into the input to research what's in it (Gemma 4 only)"
+          placeholder="// Ask an opinionated question. Three Gemma 4 agents will argue different sides.
+// Example: 'Is remote work better than in-office?'
+// Press Cmd+Enter to spawn the swarm"
           rows="3"></textarea>
 
         <!-- Image attachment row (hidden in lite mode where multimodal isn't supported) -->
@@ -124,10 +124,10 @@
 
         <div class="query-actions">
           <div class="example-queries">
-            <span class="examples-label">// suggestions:</span>
-            <button class="example-btn" data-query="What is the difference between Mixture of Experts and Dense models?">MoE vs Dense</button>
-            <button class="example-btn" data-query="How does WebGPU enable in-browser AI inference?">WebGPU + AI</button>
-            <button class="example-btn" data-query="What are the most underrated open-source AI models in 2026?">Open AI 2026</button>
+            <span class="examples-label">// try a hard question:</span>
+            <button class="example-btn" data-query="Is remote work better than in-office work?">Remote vs office</button>
+            <button class="example-btn" data-query="Should I learn Rust in 2026?">Learn Rust?</button>
+            <button class="example-btn" data-query="Is intermittent fasting actually beneficial?">Intermittent fasting</button>
           </div>
           <button id="run-btn" class="terminal-btn glow-cyan">
             [ SPAWN_SWARM ] <kbd>⌘↵</kbd>

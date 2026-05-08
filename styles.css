@@ -972,3 +972,32 @@ body {
   border-color: var(--neon-cyan);
   box-shadow: var(--glow-cyan);
 }
+
+/* ============================================
+   Perspective roles — skeptic / advocate / pragmatist
+   Subtle accent colors so the three workers are visually distinct
+   without overwhelming the cyberpunk theme.
+   ============================================ */
+.agent-card.role-skeptic {
+  border-left: 3px solid var(--neon-red);
+}
+.agent-card.role-skeptic .agent-header .agent-id {
+  color: var(--neon-red);
+  text-shadow: 0 0 6px rgba(255, 51, 102, 0.4);
+}
+
+.agent-card.role-advocate {
+  border-left: 3px solid var(--neon-green);
+}
+.agent-card.role-advocate .agent-header .agent-id {
+  color: var(--neon-green);
+  text-shadow: 0 0 6px rgba(0, 255, 136, 0.4);
+}
+
+.agent-card.role-pragmatist {
+  border-left: 3px solid var(--neon-amber);
+}
+.agent-card.role-pragmatist .agent-header .agent-id {
+  color: var(--neon-amber);
+  text-shadow: 0 0 6px rgba(255, 170, 0, 0.4);
+}
