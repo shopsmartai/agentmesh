@@ -2,8 +2,10 @@
 // AGENTMESH // Gemma 4 model loader (Transformers.js + WebGPU)
 // ============================================
 
-// Use ESM CDN for Transformers.js v3 (WebGPU support)
-const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1';
+// Use ESM CDN for Transformers.js. Pinned to 3.7.6 because 3.5.1 surfaces
+// raw numeric ORT errors that can't be diagnosed and prevent any model from
+// loading on either WebGPU or WASM.
+const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.6';
 
 // Model candidates in order of preference.
 // `attempts` is the list of {device, dtype} combos to try for that candidate.
