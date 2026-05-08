@@ -114,6 +114,23 @@ export async function searchWikipedia(query, { limit = 3 } = {}) {
     })
   );
 
+  // Relevance gate: if NO result title contains any of the query's
+  // distinctive words, the hits are loosely-related noise (e.g.
+  // "predictive coding" for a "WebGPU vs WebGL" question). Return empty so
+  // the cascading fallback pulls real notes from arXiv / DuckDuckGo. Cuts
+  // the "research findings do not contain..." failure mode for niche
+  // cross-domain queries.
+  const queryWords = condensed.split(/\s+/).filter((w) => w.length > 3);
+  if (queryWords.length > 0) {
+    const anyTitleMatches = summaries.some((r) => {
+      const title = (r.title || '').toLowerCase();
+      return queryWords.some((w) => title.includes(w.toLowerCase()));
+    });
+    if (!anyTitleMatches) {
+      return { source: 'wikipedia', query, results: [] };
+    }
+  }
+
   return { source: 'wikipedia', query, results: summaries };
 }
 
