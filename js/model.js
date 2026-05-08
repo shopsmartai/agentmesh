@@ -9,17 +9,11 @@ const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers
 
 // Model candidates in order of preference.
 // `attempts` is the list of {device, dtype} combos to try for that candidate.
-// We try WebGPU first (fast), then fall back to WASM (slow but always works
-// when ORT WebGPU kernels are missing or buffer limits are exceeded).
-const MODEL_CANDIDATES = [
-  {
-    id: 'onnx-community/gemma-3-1b-it-ONNX-GQA',
-    label: 'gemma-3-1b-it', family: 'gemma', size: '~860MB',
-    attempts: [
-      { device: 'webgpu', dtype: 'q4f16' },
-      { device: 'webgpu', dtype: 'q4' },
-    ],
-  },
+// SmolLM2-360M comes first because it's verified to load reliably on prod
+// (Cross-Origin Isolated GitHub Pages with WebGPU). Gemma 3 1B is offered
+// as a heavier secondary fallback for clients where SmolLM2 fails.
+// Adding `?model=gemma` query param boosts Gemma to first.
+const MODEL_CANDIDATES_DEFAULT = [
   {
     id: 'HuggingFaceTB/SmolLM2-360M-Instruct',
     label: 'smollm2-360m', family: 'smollm', size: '~270MB',
@@ -38,7 +32,25 @@ const MODEL_CANDIDATES = [
       { device: 'wasm', dtype: 'q4' },
     ],
   },
+  {
+    id: 'onnx-community/gemma-3-1b-it-ONNX-GQA',
+    label: 'gemma-3-1b-it', family: 'gemma', size: '~860MB',
+    attempts: [
+      { device: 'webgpu', dtype: 'q4f16' },
+      { device: 'webgpu', dtype: 'q4' },
+    ],
+  },
 ];
+
+const GEMMA_CANDIDATE = MODEL_CANDIDATES_DEFAULT.find((c) => c.family === 'gemma');
+
+function pickCandidates() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('model') === 'gemma' && GEMMA_CANDIDATE) {
+    return [GEMMA_CANDIDATE, ...MODEL_CANDIDATES_DEFAULT.filter((c) => c !== GEMMA_CANDIDATE)];
+  }
+  return MODEL_CANDIDATES_DEFAULT;
+}
 
 class ModelRuntime {
   constructor() {
@@ -78,7 +90,8 @@ class ModelRuntime {
 
     let lastError = null;
     let lastDetail = 'unknown';
-    for (const candidate of MODEL_CANDIDATES) {
+    const candidates = pickCandidates();
+    for (const candidate of candidates) {
       const attempts = candidate.attempts || [{ device: 'webgpu', dtype: 'q4' }];
       for (const attempt of attempts) {
         if (attempt.device === 'webgpu' && !hasWebGPU) continue;
