@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "agentmesh",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["-y", "http-server", ".", "-p", "4570", "-c-1", "--cors"],
+      "port": 4570
+    }
+  ]
+}

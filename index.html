@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentMesh // Local AI Agent Swarm in Your Browser</title>
+  <meta name="description" content="A swarm of AI agents running entirely in your browser tab. Powered by Gemma 4 + WebGPU. No server. No API key. No install.">
+  <meta property="og:title" content="AgentMesh — Local AI Agents in Your Browser">
+  <meta property="og:description" content="A swarm of AI agents running entirely in your browser tab. No server. No API key. No install.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=VT323&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- CRT scanlines overlay -->
+  <div class="scanlines"></div>
+  <div class="vignette"></div>
+
+  <!-- Boot screen -->
+  <div id="boot-screen" class="screen active">
+    <div class="boot-content">
+      <pre class="ascii-logo" id="ascii-logo"></pre>
+      <div class="boot-log" id="boot-log"></div>
+      <button id="boot-init-btn" class="terminal-btn glow-cyan" style="display: none;">
+        [ INITIALIZE_SWARM.exe ]
+      </button>
+    </div>
+  </div>
+
+  <!-- Model loading screen -->
+  <div id="loading-screen" class="screen">
+    <div class="loading-content">
+      <div class="loading-header">
+        <span class="prompt">root@agentmesh:~$</span>
+        <span class="loading-cmd">load --model gemma-4-e4b --backend webgpu</span>
+      </div>
+      <div class="loading-status" id="loading-status">Initializing WebGPU adapter...</div>
+      <div class="progress-container">
+        <div class="progress-bar" id="progress-bar"></div>
+        <div class="progress-text" id="progress-text">0%</div>
+      </div>
+      <div class="loading-files" id="loading-files"></div>
+      <div class="loading-tip">
+        <span class="tip-label">[INFO]</span>
+        <span id="loading-tip-text">First load downloads ~1.2GB. Cached after that.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- WebGPU not supported -->
+  <div id="no-webgpu-screen" class="screen">
+    <div class="error-content">
+      <h2 class="error-title glow-red">[ ERROR_INCOMPATIBLE_RUNTIME ]</h2>
+      <p>Your browser does not support WebGPU.</p>
+      <p>AgentMesh runs Gemma 4 directly on your GPU. Try one of these:</p>
+      <ul class="error-list">
+        <li>Chrome 113+ (recommended)</li>
+        <li>Edge 113+</li>
+        <li>Brave / Arc / Opera (recent)</li>
+        <li>Firefox Nightly with <code>dom.webgpu.enabled</code></li>
+      </ul>
+      <p class="error-note">On mobile? Try a desktop browser for now. Mobile WebGPU is rolling out.</p>
+    </div>
+  </div>
+
+  <!-- Main interface -->
+  <div id="main-screen" class="screen">
+    <header class="terminal-header">
+      <div class="header-left">
+        <span class="status-dot online"></span>
+        <span class="header-title">AGENTMESH</span>
+        <span class="header-version">v1.0 · gemma-4-e4b</span>
+      </div>
+      <div class="header-right">
+        <span class="header-stat" id="agent-count-stat">0 agents</span>
+        <span class="divider">|</span>
+        <span class="header-stat" id="token-count-stat">0 tokens</span>
+        <span class="divider">|</span>
+        <a href="https://github.com/shopsmartai/agentmesh" target="_blank" class="header-link">github</a>
+      </div>
+    </header>
+
+    <main class="terminal-main">
+      <!-- Query input -->
+      <div class="query-section">
+        <div class="prompt-line">
+          <span class="prompt">root@agentmesh:~$</span>
+          <span class="prompt-cmd">research</span>
+        </div>
+        <textarea
+          id="query-input"
+          class="query-input"
+          placeholder="// Type your research question and press Cmd+Enter to spawn the swarm
+// Example: What are the trade-offs between WebGPU and WebGL for ML inference?"
+          rows="3"></textarea>
+        <div class="query-actions">
+          <div class="example-queries">
+            <span class="examples-label">// suggestions:</span>
+            <button class="example-btn" data-query="What is the difference between Mixture of Experts and Dense models?">MoE vs Dense</button>
+            <button class="example-btn" data-query="How does WebGPU enable in-browser AI inference?">WebGPU + AI</button>
+            <button class="example-btn" data-query="What are the most underrated open-source AI models in 2026?">Open AI 2026</button>
+          </div>
+          <button id="run-btn" class="terminal-btn glow-cyan">
+            [ SPAWN_SWARM ] <kbd>⌘↵</kbd>
+          </button>
+        </div>
+      </div>
+
+      <!-- Agent visualization grid -->
+      <div class="swarm-section" id="swarm-section">
+        <div class="swarm-empty" id="swarm-empty">
+          <pre class="empty-art">
+   ┌─[ awaiting query ]─┐
+   │                    │
+   │   /\_/\            │
+   │  ( o.o )    .agt   │
+   │   > ^ <            │
+   │                    │
+   └────────────────────┘
+        </pre>
+          <p class="empty-text">No agents active. Spawn a swarm to begin.</p>
+        </div>
+
+        <div class="swarm-active" id="swarm-active" style="display: none;">
+          <!-- Agents injected here by JS -->
+        </div>
+      </div>
+
+      <!-- Final synthesis -->
+      <div class="synthesis-section" id="synthesis-section" style="display: none;">
+        <div class="synthesis-header">
+          <span class="prompt">root@agentmesh:~$</span>
+          <span class="synth-cmd">cat /swarm/final_synthesis.md</span>
+        </div>
+        <div class="synthesis-body" id="synthesis-body"></div>
+        <div class="synthesis-footer">
+          <button id="copy-btn" class="terminal-btn-sm">[ copy ]</button>
+          <button id="share-btn" class="terminal-btn-sm">[ share_url ]</button>
+          <button id="reset-btn" class="terminal-btn-sm">[ new_query ]</button>
+        </div>
+      </div>
+    </main>
+
+    <footer class="terminal-footer">
+      <div class="footer-left">
+        <span class="footer-stat">0 servers contacted</span>
+        <span class="divider">|</span>
+        <span class="footer-stat">0 cookies set</span>
+        <span class="divider">|</span>
+        <span class="footer-stat glow-cyan">100% local</span>
+      </div>
+      <div class="footer-right">
+        <span class="footer-link">made for the gemma 4 challenge</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Module entry -->
+  <script type="module" src="js/main.js"></script>
+
+  <!-- GoatCounter analytics -->
+  <script data-goatcounter="https://agentmesh.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
+</body>
+</html>
