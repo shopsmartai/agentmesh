@@ -140,11 +140,42 @@ function planSharesTopicWith(plan, query) {
 }
 
 function pickToolForQuestion(question) {
-  // Lightweight heuristic: HN for tech-news-y questions, Wikipedia otherwise.
+  // 3-way heuristic across wikipedia / hackernews / arxiv. The cascading
+  // fallback below catches misclassifications by retrying with a different
+  // source when the picked tool returns nothing.
   const lc = question.toLowerCase();
-  const hnSignals = ['recent', 'launch', 'release', 'startup', 'developer', 'opinion', 'discussion', 'reception', 'ship', '2026', '2025', 'news'];
-  if (hnSignals.some(s => lc.includes(s))) return 'hackernews';
+  const arxivSignals = ['paper', 'preprint', 'study', 'research', 'arxiv', 'algorithm', 'mechanism', 'theorem', 'proof', 'neural network', 'gradient', 'optimization', 'embedding', 'transformer', 'training'];
+  if (arxivSignals.some((s) => lc.includes(s))) return 'arxiv';
+
+  const hnSignals = ['recent', 'launch', 'release', 'startup', 'developer', 'opinion', 'discussion', 'reception', 'ship', '2026', '2025', '2024', 'news', 'open source', 'open-source'];
+  if (hnSignals.some((s) => lc.includes(s))) return 'hackernews';
+
   return 'wikipedia';
+}
+
+// Cascading fallback order. If the first tool returns 0 results, try the
+// next ones in turn. Order chosen so generic-knowledge sources back up
+// specialty sources and vice versa.
+const TOOL_FALLBACKS = {
+  wikipedia: ['duckduckgo', 'arxiv'],
+  hackernews: ['duckduckgo', 'wikipedia'],
+  arxiv: ['wikipedia', 'duckduckgo'],
+  duckduckgo: ['wikipedia', 'arxiv'],
+};
+
+async function runToolWithFallback(primary, query, { onUpdate } = {}) {
+  const order = [primary, ...(TOOL_FALLBACKS[primary] || [])];
+  let last = null;
+  for (const tool of order) {
+    onUpdate?.({ status: 'tool', text: `${tool}.search("${query}")` });
+    last = await runTool(tool, query);
+    if (last.ok && Array.isArray(last.results) && last.results.length > 0) {
+      return { toolUsed: tool, toolResult: last };
+    }
+  }
+  // All sources empty — return whatever we last got (so the worker can be
+  // honest about the lack of findings instead of hallucinating).
+  return { toolUsed: primary, toolResult: last || { ok: false, tool: primary, error: 'no result', results: [] } };
 }
 
 // ============================================
@@ -200,11 +231,9 @@ export async function planQuery(model, query, { onUpdate } = {}) {
 // ============================================
 
 export async function runWorker(model, subQuestion, agentId, { onUpdate } = {}) {
-  // Step 1: pick a tool and run it
-  const toolName = pickToolForQuestion(subQuestion);
-  onUpdate?.({ status: 'tool', text: `${toolName}.search("${subQuestion}")` });
-
-  const toolResult = await runTool(toolName, subQuestion);
+  // Step 1: pick a primary tool, run it, cascade through fallbacks if empty
+  const primary = pickToolForQuestion(subQuestion);
+  const { toolUsed: toolName, toolResult } = await runToolWithFallback(primary, subQuestion, { onUpdate });
   const notes = formatResultsForModel(toolResult);
 
   // Step 2: ask model to synthesize a focused answer

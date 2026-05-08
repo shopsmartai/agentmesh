@@ -112,6 +112,42 @@ export async function searchDuckDuckGo(query) {
 }
 
 // ============================================
+// ARXIV (free Atom-feed API, no key, CORS-friendly)
+// ============================================
+
+export async function searchArxiv(query, { limit = 4 } = {}) {
+  const url = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&start=0&max_results=${limit}`;
+  const res = await fetchWithTimeout(url);
+  if (!res.ok) throw new Error('arxiv search failed');
+  const xml = await res.text();
+
+  // Light XML parse — Atom feed entries
+  const entries = [];
+  const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
+  let m;
+  while ((m = entryRegex.exec(xml)) !== null) {
+    const block = m[1];
+    const pick = (tag) => {
+      const t = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\/${tag}>`).exec(block);
+      return t ? t[1].replace(/\s+/g, ' ').trim() : '';
+    };
+    const title = pick('title');
+    const summary = pick('summary');
+    const link = (/<id>([\s\S]*?)<\/id>/.exec(block) || [])[1] || '';
+    if (title && summary) {
+      entries.push({
+        title,
+        extract: summary.length > 320 ? summary.slice(0, 320) + '…' : summary,
+        url: link.trim(),
+      });
+    }
+    if (entries.length >= limit) break;
+  }
+
+  return { source: 'arxiv', query, results: entries };
+}
+
+// ============================================
 // TOOL REGISTRY (used by agents)
 // ============================================
 
@@ -130,9 +166,15 @@ export const TOOLS = {
   },
   duckduckgo: {
     name: 'duckduckgo',
-    description: 'Lookup an instant answer or related topics from DuckDuckGo.',
+    description: 'Lookup an instant answer or related topics from DuckDuckGo. Useful as a generic-knowledge fallback when Wikipedia returns nothing.',
     args: ['query'],
     run: searchDuckDuckGo,
+  },
+  arxiv: {
+    name: 'arxiv',
+    description: 'Search arXiv for academic papers and preprints on technical/scientific topics. Returns paper titles, abstracts, and links.',
+    args: ['query'],
+    run: searchArxiv,
   },
 };
 
