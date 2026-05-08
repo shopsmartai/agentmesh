@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AgentMesh // Local AI Agent Swarm in Your Browser</title>
-  <meta name="description" content="A swarm of AI agents running entirely in your browser tab. Powered by Gemma + WebGPU. No server. No API key. No install.">
+  <meta name="description" content="A swarm of AI agents running entirely in your browser tab. Powered by Gemma 4 E2B + WebGPU + Transformers.js v4. No server. No API key. No install.">
 
   <!-- Open Graph / Twitter -->
   <meta property="og:type" content="website">
@@ -46,7 +46,7 @@
     <div class="loading-content">
       <div class="loading-header">
         <span class="prompt">root@agentmesh:~$</span>
-        <span class="loading-cmd">load --model gemma-4-e4b --backend webgpu</span>
+        <span class="loading-cmd">load --model gemma-4-E2B --backend webgpu</span>
       </div>
       <div class="loading-status" id="loading-status">Initializing WebGPU adapter...</div>
       <div class="progress-container">
@@ -56,7 +56,7 @@
       <div class="loading-files" id="loading-files"></div>
       <div class="loading-tip">
         <span class="tip-label">[INFO]</span>
-        <span id="loading-tip-text">First load downloads ~1.2GB. Cached after that.</span>
+        <span id="loading-tip-text">First load downloads ~3.1 GB of Gemma 4 E2B weights. Cached after — reload is instant.</span>
       </div>
     </div>
   </div>
@@ -66,7 +66,7 @@
     <div class="error-content">
       <h2 class="error-title glow-red">[ ERROR_INCOMPATIBLE_RUNTIME ]</h2>
       <p>Your browser does not support WebGPU.</p>
-      <p>AgentMesh runs Gemma 4 directly on your GPU. Try one of these:</p>
+      <p>AgentMesh runs Gemma 4 E2B directly on your GPU via WebGPU. Try one of these:</p>
       <ul class="error-list">
         <li>Chrome 113+ (recommended)</li>
         <li>Edge 113+</li>
@@ -83,7 +83,7 @@
       <div class="header-left">
         <span class="status-dot online"></span>
         <span class="header-title">AGENTMESH</span>
-        <span class="header-version">v1.0 · gemma-4-e4b</span>
+        <span class="header-version">v1.0 · gemma-4-E2B</span>
       </div>
       <div class="header-right">
         <span class="header-stat" id="agent-count-stat">0 agents</span>

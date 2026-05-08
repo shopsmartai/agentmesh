@@ -51,11 +51,13 @@ const BOOT_LINES = [
 ];
 
 const TIPS = [
-  "First load downloads a quantized model (~700MB-1.2GB). Cached after that.",
+  "First load downloads ~3.1 GB of Gemma 4 E2B weights. Cached after that — reload is instant.",
+  "Append ?model=smollm for a 270 MB lite mode (SmolLM2-360M, faster but less capable).",
   "Your queries never leave this tab.",
-  "Each agent runs the same local model with a different role.",
-  "Real local AI. No fine print, no telemetry.",
-  "WebGPU + Transformers.js v3 = no install required.",
+  "Five agents share one Gemma 4 instance — they timeshare on the GPU.",
+  "Gemma 4 E2B has a 128K context window, so agents can pass full notes between each other.",
+  "Real local AI. No API key. No telemetry.",
+  "WebGPU + Transformers.js v4 = no install required.",
 ];
 
 // ============================================

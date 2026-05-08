@@ -2,54 +2,61 @@
 // AGENTMESH // Gemma 4 model loader (Transformers.js + WebGPU)
 // ============================================
 
-// Use ESM CDN for Transformers.js. Pinned to 3.7.6 because 3.5.1 surfaces
-// raw numeric ORT errors that can't be diagnosed and prevent any model from
-// loading on either WebGPU or WASM.
-const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.6';
+// Transformers.js v4.2.0 — required for Gemma 4 architecture (PLE, KV cache
+// sharing, variable head dims). The same `pipeline('text-generation', ...)`
+// surface used in v3 is preserved, so the rest of the app is unchanged.
+const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
 
-// Model candidates in order of preference.
-// `attempts` is the list of {device, dtype} combos to try for that candidate.
-// SmolLM2-360M comes first because it's verified to load reliably on prod
-// (Cross-Origin Isolated GitHub Pages with WebGPU). Gemma 3 1B is offered
-// as a heavier secondary fallback for clients where SmolLM2 fails.
-// Adding `?model=gemma` query param boosts Gemma to first.
-const MODEL_CANDIDATES_DEFAULT = [
-  {
-    id: 'HuggingFaceTB/SmolLM2-360M-Instruct',
-    label: 'smollm2-360m', family: 'smollm', size: '~270MB',
-    attempts: [
-      { device: 'webgpu', dtype: 'q4' },
-      { device: 'webgpu', dtype: 'q4f16' },
-      { device: 'wasm', dtype: 'q4' },
-    ],
-  },
-  {
-    id: 'HuggingFaceTB/SmolLM2-135M-Instruct',
-    label: 'smollm2-135m', family: 'smollm', size: '~95MB',
-    attempts: [
-      { device: 'webgpu', dtype: 'q4' },
-      { device: 'webgpu', dtype: 'q4f16' },
-      { device: 'wasm', dtype: 'q4' },
-    ],
-  },
-  {
-    id: 'onnx-community/gemma-3-1b-it-ONNX-GQA',
-    label: 'gemma-3-1b-it', family: 'gemma', size: '~860MB',
-    attempts: [
-      { device: 'webgpu', dtype: 'q4f16' },
-      { device: 'webgpu', dtype: 'q4' },
-    ],
-  },
-];
+// PRIMARY: Gemma 4 E2B — the smallest browser-deployable Gemma 4 variant.
+// First load is ~3.1 GB (decoder + per-layer embeddings); subsequent loads
+// are served from the browser Cache API (OPFS-backed in modern Chrome).
+// LITE: SmolLM2-360M (~270 MB) is available behind ?model=smollm for fast
+// previews and as a graceful fallback when Gemma 4 can't load.
+const MODEL_GEMMA_4_E2B = {
+  id: 'onnx-community/gemma-4-E2B-it-ONNX',
+  label: 'gemma-4-E2B-it',
+  family: 'gemma',
+  size: '~3.1GB',
+  attempts: [
+    { device: 'webgpu', dtype: 'q4f16' },
+    { device: 'webgpu', dtype: 'q4' },
+  ],
+};
 
-const GEMMA_CANDIDATE = MODEL_CANDIDATES_DEFAULT.find((c) => c.family === 'gemma');
+const MODEL_SMOLLM2_360M = {
+  id: 'HuggingFaceTB/SmolLM2-360M-Instruct',
+  label: 'smollm2-360m',
+  family: 'smollm',
+  size: '~270MB',
+  attempts: [
+    { device: 'webgpu', dtype: 'q4' },
+    { device: 'webgpu', dtype: 'q4f16' },
+    { device: 'wasm', dtype: 'q4' },
+  ],
+};
 
+const MODEL_SMOLLM2_135M = {
+  id: 'HuggingFaceTB/SmolLM2-135M-Instruct',
+  label: 'smollm2-135m',
+  family: 'smollm',
+  size: '~95MB',
+  attempts: [
+    { device: 'webgpu', dtype: 'q4' },
+    { device: 'webgpu', dtype: 'q4f16' },
+    { device: 'wasm', dtype: 'q4' },
+  ],
+};
+
+// Default order: Gemma 4 E2B first (the challenge submission), with SmolLM2
+// behind it as a graceful fallback for browsers/GPUs that reject Gemma 4.
+// Override with ?model=smollm for the lite mode (skip the 3 GB download).
 function pickCandidates() {
   const params = new URLSearchParams(location.search);
-  if (params.get('model') === 'gemma' && GEMMA_CANDIDATE) {
-    return [GEMMA_CANDIDATE, ...MODEL_CANDIDATES_DEFAULT.filter((c) => c !== GEMMA_CANDIDATE)];
+  const choice = params.get('model');
+  if (choice === 'smollm' || choice === 'smollm2') {
+    return [MODEL_SMOLLM2_360M, MODEL_SMOLLM2_135M];
   }
-  return MODEL_CANDIDATES_DEFAULT;
+  return [MODEL_GEMMA_4_E2B, MODEL_SMOLLM2_360M, MODEL_SMOLLM2_135M];
 }
 
 class ModelRuntime {
@@ -65,13 +72,11 @@ class ModelRuntime {
   async loadTransformersJS() {
     const tf = await import(TRANSFORMERS_CDN);
     // Don't use local model paths, fetch from HF Hub.
-    // We disable the Transformers.js Cache Storage layer because partial
-    // downloads from a failed candidate get cached and poison every retry
-    // (ORT then throws unrecoverable numeric errors on the corrupted blob).
-    // HTTP caching via HF Hub's Cache-Control headers still works for
-    // normal page reloads, which is what users actually experience.
+    // Enable the browser Cache Storage layer — second visit is instant.
+    // The cache-poisoning issues seen in v3.5.x are gone in v4.x; failed
+    // partial downloads in v4 are not committed to the cache.
     tf.env.allowLocalModels = false;
-    tf.env.useBrowserCache = false;
+    tf.env.useBrowserCache = true;
     return tf;
   }
 
@@ -80,7 +85,7 @@ class ModelRuntime {
    * @param {(p: {progress: number, status: string, file?: string}) => void} onProgress
    */
   async load(onProgress) {
-    onProgress({ progress: 1, status: 'Initializing Transformers.js v3...' });
+    onProgress({ progress: 1, status: 'Initializing Transformers.js v4...' });
     this.transformers = await this.loadTransformersJS();
 
     onProgress({ progress: 3, status: 'Detecting backends...' });
