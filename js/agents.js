@@ -235,57 +235,54 @@ async function runToolWithFallback(primary, query, { onUpdate } = {}) {
 // PLANNER
 // ============================================
 
+/**
+ * Strip leading question words and trailing punctuation to extract a
+ * search-friendly topic from the user's question. Deterministic and fast;
+ * skips a model call that we previously made and that took ~30s on Gemma 4
+ * for ~zero added value (the model just echoed the user's question into
+ * our template).
+ */
+function extractTopic(query) {
+  return String(query || '')
+    .trim()
+    .replace(/[?!.]+$/g, '')
+    // strip leading instructional verbs ("Tell me about X", "Explain X")
+    .replace(/^(tell\s+me\s+about|explain|describe)\s+/i, '')
+    // strip any chain of leading question words and auxiliaries
+    // ("How does X" -> "X", "What is X" -> "X", "Is X" -> "X")
+    .replace(/^((?:is|are|was|were|do|does|did|will|should|can|could|would|how|why|what|when|where|which|who|whom|whose)\s+)+/i, '')
+    // strip "I/we/you + (auxiliary)?  + verb" patterns once
+    .replace(/^(i|we|you)\s+(should|will|must|need\s+to|want\s+to|am\s+trying\s+to|try\s+to)\s+\w+\s+/i, '')
+    // standalone "I learn X" / "We use X" -> "X"
+    .replace(/^(i|we|you)\s+\w+\s+/i, '')
+    // strip leading "from " (as in "switch from X to Y") so the topic
+    // becomes the things being compared rather than the preposition
+    .replace(/^from\s+/i, '')
+    .trim();
+}
+
 export async function planQuery(model, query, { onUpdate, image } = {}) {
-  onUpdate?.({ status: 'thinking', text: '' });
+  // The planner is now deterministic — no model call. We extract the topic
+  // and emit one search query per perspective. Saves ~30s on Gemma 4 vs
+  // the previous model-driven planner, which routinely echoed the user's
+  // full question instead of extracting the topic. Image is unused here
+  // (image handling stays wired for future multimodal work).
+  void image;
 
-  // The user's question goes to three perspective workers (skeptic /
-  // advocate / pragmatist). The planner's job is to pull out the topic
-  // and emit one search query per perspective.
-  const userText = image
-    ? `Image attached above.\nUser's question: "${query}"\n\nOutput the 3 search queries now, one per perspective (criticism / benefits / real-world usage).`
-    : `User's question: "${query}"\n\nOutput the 3 search queries now, one per perspective (criticism / benefits / real-world usage).`;
+  onUpdate?.({ status: 'thinking', text: 'Extracting topic...' });
 
-  const messages = [
-    { role: 'system', content: PLANNER_SYSTEM },
-    { role: 'user', content: userText },
+  const topic = extractTopic(query) || query;
+  const plan = [
+    `${topic} criticism drawbacks problems`,
+    `${topic} benefits advantages success`,
+    `${topic} real world usage examples`,
   ];
 
-  let streamed = '';
-  // Greedy decoding (temperature 0) and a tight token cap. Planner outputs
-  // are short and structured; sampling adds latency without quality.
-  const raw = await model.chat(messages, {
-    maxTokens: 150,
-    temperature: 0,
-    image,
-    onToken: (t) => {
-      streamed += t;
-      onUpdate?.({ status: 'thinking', text: streamed });
-    },
+  onUpdate?.({
+    status: 'done',
+    text: `Topic: ${topic}`,
+    plan,
   });
-
-  const text = raw || streamed;
-  let plan = extractSubQuestions(text);
-
-  // Sanity check: at least one sub-question must share a keyword with the
-  // original query, otherwise the small model copied the example prompt.
-  if (plan.length > 0 && !planSharesTopicWith(plan, query)) {
-    plan = [];
-  }
-
-  // Fallback if model fails to produce a parseable list. Order matters:
-  // index 0 is the skeptic's search, 1 the advocate's, 2 the pragmatist's.
-  if (plan.length === 0) {
-    plan = [
-      `${query} criticism drawbacks problems`,
-      `${query} benefits advantages success`,
-      `${query} real world usage examples`,
-    ];
-  }
-
-  // Cap to 3 sub-questions for predictable latency on small models
-  plan = plan.slice(0, 3);
-
-  onUpdate?.({ status: 'done', text: `Decomposed into ${plan.length} sub-questions`, plan });
   return plan;
 }
 
