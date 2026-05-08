@@ -18,6 +18,7 @@ import {
   updateSynthCard,
   showSynthesis,
 } from './ui.js';
+import { getViz, resetViz } from './viz.js';
 
 const ASCII_LOGO = `
    ██████╗  ██████╗ ███████╗███╗   ██╗████████╗███╗   ███╗███████╗███████╗██╗  ██╗
@@ -223,6 +224,7 @@ async function runQuery(query) {
 
   clearSwarm();
   resetStats();
+  resetViz();
   document.getElementById('swarm-active').style.display = 'grid';
   document.getElementById('swarm-empty').style.display = 'none';
 
@@ -230,16 +232,49 @@ async function runQuery(query) {
   renderPlannerCard(query);
   setAgentCount(1);
 
+  // Initialize viz: register the planner node
+  const viz = getViz();
+  viz?.addNode('agent-planner', 'planner');
+
   currentRun = (async () => {
     try {
       await runSwarm(model, query, {
-        onPlanner: updatePlannerCard,
-        onWorkerStart: (i, subQ) => renderWorkerCard(i, subQ),
+        onPlanner: (u) => {
+          updatePlannerCard(u);
+          if (u.status === 'done' && viz && u.plan) {
+            // Planner finished — visualize fan-out from planner to each worker
+            // (the worker cards will be added a moment later)
+            setTimeout(() => {
+              for (let i = 0; i < u.plan.length; i++) {
+                viz.setConnection('agent-planner', `agent-${i + 1}`, 1, 'cyan');
+                viz.emitParticles('agent-planner', `agent-${i + 1}`, 6, 'cyan');
+              }
+            }, 50);
+          }
+        },
+        onWorkerStart: (i, subQ) => {
+          renderWorkerCard(i, subQ);
+          viz?.addNode(`agent-${i + 1}`, 'worker');
+          viz?.setConnection('agent-planner', `agent-${i + 1}`, 0.4, 'cyan');
+        },
         onWorkerUpdate: (i, u) => updateWorkerCard(i, u),
-        onWorkerDone: (i, result) => updateWorkerCard(i, { status: 'done', text: result.answer, toolUsed: result.toolUsed, sources: result.sources }),
+        onWorkerDone: (i, result) => {
+          updateWorkerCard(i, { status: 'done', text: result.answer, toolUsed: result.toolUsed, sources: result.sources });
+          // Pulse the connection to indicate completion
+          viz?.setConnection('agent-planner', `agent-${i + 1}`, 0.8, 'green');
+          viz?.emitParticles(`agent-${i + 1}`, 'agent-synth', 5, 'magenta');
+        },
         onSynthUpdate: (u) => {
-          // First update creates the synth card
-          if (!document.getElementById('agent-synth')) renderSynthCard();
+          if (!document.getElementById('agent-synth')) {
+            renderSynthCard();
+            viz?.addNode('agent-synth', 'synth');
+            // Connect every worker to the synth node
+            for (let i = 1; i <= 5; i++) {
+              if (document.getElementById(`agent-${i}`)) {
+                viz?.setConnection(`agent-${i}`, 'agent-synth', 1, 'magenta');
+              }
+            }
+          }
           updateSynthCard(u);
           if (u.status === 'done') {
             showSynthesis(u.text);
