@@ -1005,8 +1005,11 @@ body {
 /* ============================================
    Settings panel — overlay covering any screen
    Toggled from [ settings ] buttons on boot and main screens.
+   The :not([hidden]) selector means the HTML `hidden` attribute on the
+   panel actually hides it. Without this, `display: flex` would override
+   the browser default `display: none` that comes with `hidden`.
    ============================================ */
-.settings-panel {
+.settings-panel:not([hidden]) {
   position: fixed;
   inset: 0;
   z-index: 1000;
