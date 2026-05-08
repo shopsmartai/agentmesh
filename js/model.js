@@ -31,13 +31,14 @@ class ModelRuntime {
 
   async loadTransformersJS() {
     const tf = await import(TRANSFORMERS_CDN);
-    // Configure: don't use local model paths, fetch from HF Hub.
-    // Browser Cache API works on real https origins; only fails on some
-    // localhost / disk-constrained Chrome configurations. So enable cache
-    // on production hosts and disable on localhost for reliability.
+    // Don't use local model paths, fetch from HF Hub.
+    // We disable the Transformers.js Cache Storage layer because partial
+    // downloads from a failed candidate get cached and poison every retry
+    // (ORT then throws unrecoverable numeric errors on the corrupted blob).
+    // HTTP caching via HF Hub's Cache-Control headers still works for
+    // normal page reloads, which is what users actually experience.
     tf.env.allowLocalModels = false;
-    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    tf.env.useBrowserCache = !isLocal;
+    tf.env.useBrowserCache = false;
     return tf;
   }
 
