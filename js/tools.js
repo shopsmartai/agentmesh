@@ -114,19 +114,23 @@ export async function searchWikipedia(query, { limit = 3 } = {}) {
     })
   );
 
-  // Relevance gate: if NO result title contains any of the query's
-  // distinctive words, the hits are loosely-related noise (e.g.
-  // "predictive coding" for a "WebGPU vs WebGL" question). Return empty so
-  // the cascading fallback pulls real notes from arXiv / DuckDuckGo. Cuts
-  // the "research findings do not contain..." failure mode for niche
-  // cross-domain queries.
+  // Relevance gate. Earlier version required *any* keyword to match *any*
+  // title, which was too loose: "criticism drawbacks problems" for "remote
+  // work" matched "Film criticism" because it shares the word "criticism".
+  //
+  // New rule: the article title must contain at least one of the topic
+  // words from the FIRST half of the condensed query. The first half is
+  // the user's actual subject ("remote work" in "remote work criticism
+  // drawbacks problems"); the second half is the angle suffix and tends
+  // to match too broadly on its own.
   const queryWords = condensed.split(/\s+/).filter((w) => w.length > 3);
-  if (queryWords.length > 0) {
-    const anyTitleMatches = summaries.some((r) => {
+  if (queryWords.length >= 2) {
+    const topicWords = queryWords.slice(0, Math.ceil(queryWords.length / 2));
+    const anyTitleMatchesTopic = summaries.some((r) => {
       const title = (r.title || '').toLowerCase();
-      return queryWords.some((w) => title.includes(w.toLowerCase()));
+      return topicWords.some((w) => title.includes(w.toLowerCase()));
     });
-    if (!anyTitleMatches) {
+    if (!anyTitleMatchesTopic) {
       return { source: 'wikipedia', query, results: [] };
     }
   }

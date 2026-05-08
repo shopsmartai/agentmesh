@@ -243,7 +243,7 @@ async function runToolWithFallback(primary, query, { onUpdate } = {}) {
  * our template).
  */
 function extractTopic(query) {
-  return String(query || '')
+  let s = String(query || '')
     .trim()
     .replace(/[?!.]+$/g, '')
     // strip leading instructional verbs ("Tell me about X", "Explain X")
@@ -251,14 +251,29 @@ function extractTopic(query) {
     // strip any chain of leading question words and auxiliaries
     // ("How does X" -> "X", "What is X" -> "X", "Is X" -> "X")
     .replace(/^((?:is|are|was|were|do|does|did|will|should|can|could|would|how|why|what|when|where|which|who|whom|whose)\s+)+/i, '')
-    // strip "I/we/you + (auxiliary)?  + verb" patterns once
+    // strip "I/we/you + (auxiliary)? + verb" patterns once
     .replace(/^(i|we|you)\s+(should|will|must|need\s+to|want\s+to|am\s+trying\s+to|try\s+to)\s+\w+\s+/i, '')
     // standalone "I learn X" / "We use X" -> "X"
     .replace(/^(i|we|you)\s+\w+\s+/i, '')
-    // strip leading "from " (as in "switch from X to Y") so the topic
-    // becomes the things being compared rather than the preposition
+    // strip leading "from " (as in "switch from X to Y")
     .replace(/^from\s+/i, '')
     .trim();
+
+  // For comparisons ("X better than Y", "X vs Y", "X or Y"), keep only the
+  // first side. Wikipedia does not have an article about the comparison
+  // itself; it has separate articles for each thing being compared.
+  s = s.replace(/\s+(better|worse|cheaper|more|less|faster|slower|stronger|weaker)\s+than\s+.*$/i, '');
+  s = s.replace(/\s+(vs|versus|or)\s+\S.*$/i, '');
+
+  // Cap at 4 content words. Wikipedia srsearch ranks short topical queries
+  // dramatically better than long ones — "remote work" finds the right
+  // article; "remote work better than in-office work" does not.
+  const words = s.split(/\s+/).filter(Boolean);
+  if (words.length > 4) {
+    s = words.slice(0, 4).join(' ');
+  }
+
+  return s.trim();
 }
 
 export async function planQuery(model, query, { onUpdate, image } = {}) {

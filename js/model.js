@@ -185,18 +185,18 @@ class ModelRuntime {
       },
     });
 
-    // Try the user's selected model first. If Gemini returns a 5xx (the
-    // 31B model especially is prone to "Internal error encountered" under
-    // free-tier load), fall through to the next model in the fallback
-    // chain. This keeps the demo working when Google's larger endpoints
-    // are temporarily overloaded.
+    // We use the non-streaming :generateContent endpoint instead of SSE.
+    // The SSE parser was dropping responses on prod; non-streaming is one
+    // JSON parse and dramatically more reliable. We lose token-by-token
+    // streaming on cloud mode but each cloud call is 3-10 seconds total,
+    // so it shows up as a single fast paint instead of a slow drip.
     const userModel = settings.getCloudModel();
     const tryOrder = [userModel, ...settings.CLOUD_MODEL_FALLBACKS.filter((m) => m !== userModel)];
 
     let lastError = null;
     for (let i = 0; i < tryOrder.length; i++) {
       const modelId = tryOrder[i];
-      const url = `${GEMINI_BASE}/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+      const url = `${GEMINI_BASE}/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
       let response;
       try {
@@ -207,13 +207,38 @@ class ModelRuntime {
           signal,
         });
       } catch (err) {
-        // Network-layer failure — retry with the next model.
         lastError = new Error(`Network error calling Gemini API: ${err.message}`);
         continue;
       }
 
       if (response.ok) {
-        return this._consumeGeminiStream(response, onToken);
+        let data;
+        try {
+          data = await response.json();
+        } catch (err) {
+          lastError = new Error(`Gemini API: malformed response: ${err.message}`);
+          continue;
+        }
+
+        const candidate = data?.candidates?.[0];
+        const finishReason = candidate?.finishReason;
+        const parts = candidate?.content?.parts || [];
+        const fullText = parts.map((p) => p.text || '').join('');
+
+        if (!fullText) {
+          // Empty response. Could be a SAFETY block, MAX_TOKENS hit
+          // before any text was emitted, or model refusing. Surface a
+          // useful message instead of failing silently.
+          const reason = finishReason ? ` (finishReason: ${finishReason})` : '';
+          lastError = new Error(`Gemini API (${modelId}) returned empty response${reason}`);
+          continue;
+        }
+
+        // Emit the full text in one shot so the UI's onToken callback
+        // still fires. Workers re-render their panel on every onToken
+        // call; one big call paints once instead of many small ones.
+        try { onToken?.(fullText); } catch (e) { console.warn('[model] onToken threw:', e); }
+        return fullText;
       }
 
       // Non-2xx. Pull the error JSON if Google sent one.
@@ -232,7 +257,6 @@ class ModelRuntime {
       // 5xx — Google-side problem, often capacity. Try the next model.
       console.warn(`[model] ${modelId} returned ${response.status}; falling through.`);
       lastError = new Error(`Gemini API (${modelId}): ${detail}`);
-      // Brief backoff before the next attempt so we don't hammer.
       await new Promise((r) => setTimeout(r, 500 * (i + 1)));
     }
 
