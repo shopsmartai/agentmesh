@@ -6,17 +6,36 @@
 const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1';
 
 // Model candidates in order of preference.
-// On production hosts we try Gemma first (qualifies for the Gemma challenge),
-// then fall back to known-good small ONNX/WebGPU models so the app always runs.
-//
-// `dtypes` is the list of quantizations to try for that candidate, in order.
-// q4f16 = 4-bit weights, fp16 activations -> best WebGPU compatibility
-// q4    = pure int4 -> may lack WebGPU kernels for some models (e.g. Gemma)
-// fp16  = full precision fp16 -> always works but largest
+// `attempts` is the list of {device, dtype} combos to try for that candidate.
+// We try WebGPU first (fast), then fall back to WASM (slow but always works
+// when ORT WebGPU kernels are missing or buffer limits are exceeded).
 const MODEL_CANDIDATES = [
-  { id: 'onnx-community/gemma-3-1b-it-ONNX-GQA', label: 'gemma-3-1b-it', family: 'gemma', size: '~860MB', dtypes: ['q4f16', 'q4'] },
-  { id: 'HuggingFaceTB/SmolLM2-360M-Instruct', label: 'smollm2-360m', family: 'smollm', size: '~270MB', dtypes: ['q4f16', 'q4'] },
-  { id: 'HuggingFaceTB/SmolLM2-135M-Instruct', label: 'smollm2-135m', family: 'smollm', size: '~95MB', dtypes: ['q4f16', 'q4'] },
+  {
+    id: 'onnx-community/gemma-3-1b-it-ONNX-GQA',
+    label: 'gemma-3-1b-it', family: 'gemma', size: '~860MB',
+    attempts: [
+      { device: 'webgpu', dtype: 'q4f16' },
+      { device: 'webgpu', dtype: 'q4' },
+    ],
+  },
+  {
+    id: 'HuggingFaceTB/SmolLM2-360M-Instruct',
+    label: 'smollm2-360m', family: 'smollm', size: '~270MB',
+    attempts: [
+      { device: 'webgpu', dtype: 'q4' },
+      { device: 'webgpu', dtype: 'q4f16' },
+      { device: 'wasm', dtype: 'q4' },
+    ],
+  },
+  {
+    id: 'HuggingFaceTB/SmolLM2-135M-Instruct',
+    label: 'smollm2-135m', family: 'smollm', size: '~95MB',
+    attempts: [
+      { device: 'webgpu', dtype: 'q4' },
+      { device: 'webgpu', dtype: 'q4f16' },
+      { device: 'wasm', dtype: 'q4' },
+    ],
+  },
 ];
 
 class ModelRuntime {
@@ -50,33 +69,30 @@ class ModelRuntime {
     onProgress({ progress: 1, status: 'Initializing Transformers.js v3...' });
     this.transformers = await this.loadTransformersJS();
 
-    onProgress({ progress: 3, status: 'Verifying WebGPU adapter...' });
-    if (!('gpu' in navigator)) {
-      throw new Error('WebGPU not available');
-    }
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-    if (!adapter) throw new Error('No WebGPU adapter');
+    onProgress({ progress: 3, status: 'Detecting backends...' });
+    const hasWebGPU = await this.hasWorkingWebGPU();
 
     onProgress({ progress: 5, status: 'Selecting model...' });
 
     let lastError = null;
     let lastDetail = 'unknown';
     for (const candidate of MODEL_CANDIDATES) {
-      const dtypes = candidate.dtypes || ['q4f16', 'q4'];
-      for (const dtype of dtypes) {
+      const attempts = candidate.attempts || [{ device: 'webgpu', dtype: 'q4' }];
+      for (const attempt of attempts) {
+        if (attempt.device === 'webgpu' && !hasWebGPU) continue;
+        const { device, dtype } = attempt;
         try {
           onProgress({
             progress: 6,
-            status: `Loading ${candidate.label} (${dtype})...`,
+            status: `Loading ${candidate.label} (${device}/${dtype})...`,
             file: candidate.id,
           });
 
           const { pipeline } = this.transformers;
           const pipe = await pipeline('text-generation', candidate.id, {
-            device: 'webgpu',
+            device,
             dtype,
             progress_callback: (data) => {
-              // data: { status, file, progress, loaded, total }
               const pct = data.progress
                 ? Math.min(95, 10 + Math.round(data.progress * 0.85))
                 : 10;
@@ -92,23 +108,22 @@ class ModelRuntime {
           this.tokenizer = pipe.tokenizer;
           this.modelId = candidate.id;
           this.modelLabel = candidate.label;
+          this.device = device;
           this.ready = true;
 
           onProgress({ progress: 98, status: 'Warming up model...' });
           await this.warmup();
 
-          onProgress({ progress: 100, status: `Ready · ${candidate.label}` });
-          return { id: candidate.id, label: candidate.label, family: candidate.family };
+          onProgress({ progress: 100, status: `Ready · ${candidate.label} (${device})` });
+          return { id: candidate.id, label: candidate.label, family: candidate.family, device };
         } catch (err) {
-          // Surface as much info as possible — Transformers.js + ORT errors
-          // are sometimes plain numbers, sometimes Error objects.
           const detail = this.describeError(err);
-          console.warn(`[model] ${candidate.id} dtype=${dtype} failed:`, detail, err);
+          console.warn(`[model] ${candidate.id} ${device}/${dtype} failed:`, detail, err);
           lastError = err;
-          lastDetail = `${candidate.label} (${dtype}): ${detail}`;
+          lastDetail = `${candidate.label} ${device}/${dtype}: ${detail}`;
           onProgress({
             progress: 6,
-            status: `${candidate.label} ${dtype} unavailable: ${String(detail).slice(0, 80)}`,
+            status: `${candidate.label} ${device}/${dtype} unavailable: ${String(detail).slice(0, 80)}`,
           });
         }
       }
@@ -140,6 +155,16 @@ class ModelRuntime {
   fileLabel(file) {
     if (!file) return 'file';
     return file.split('/').pop();
+  }
+
+  async hasWorkingWebGPU() {
+    if (!('gpu' in navigator)) return false;
+    try {
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+      return !!adapter;
+    } catch {
+      return false;
+    }
   }
 
   /**
