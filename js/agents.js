@@ -18,14 +18,22 @@ import { runTool, formatResultsForModel, TOOLS } from './tools.js';
 // thing the architecture is for: forcing the model to genuinely consider
 // opposing views before answering, instead of collapsing to one voice.
 
-const PLANNER_SYSTEM = `You extract the core topic from the user's question and produce 3 short search queries, one per perspective.
+const PLANNER_SYSTEM = `Your job: extract a 1-to-3-word TOPIC from the user's question, then output 3 short search queries.
+
+CRITICAL: The TOPIC is just the subject noun phrase. It is NOT the full question. Strip question words, verbs, and comparisons.
+
+Examples:
+- "Is remote work better than office work?" -> topic = "remote work"
+- "Should I learn Rust in 2026?" -> topic = "Rust programming language"
+- "Is intermittent fasting beneficial?" -> topic = "intermittent fasting"
+- "How does WebGPU enable AI inference?" -> topic = "WebGPU"
 
 Output exactly 3 lines in this order:
 1. <topic> criticism drawbacks problems
 2. <topic> benefits advantages success
 3. <topic> real world usage examples
 
-Each line is 4 to 7 words. The user's main topic MUST appear in each line. No question marks. No preamble. No JSON. No commentary.`;
+Each line is 4 to 6 words total. Do not echo the user's full question. No question marks. No preamble. No JSON.`;
 
 const WORKER_PERSPECTIVES = [
   {
