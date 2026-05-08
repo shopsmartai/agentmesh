@@ -68,6 +68,22 @@ const aborted = new Set(); // requestIds the main thread asked to cancel
 
 function post(msg) { self.postMessage(msg); }
 
+// Throttled progress poster. Transformers.js fires progress callbacks for
+// every fetch chunk during the 3 GB Gemma 4 download — that's hundreds of
+// events per second. Forwarding each one to the main thread floods its
+// message queue and freezes the page. Coalesce to one message per 100ms,
+// but always flush 'initiate' / 'done' / 'ready' / final progress so the
+// UI doesn't miss state transitions.
+let lastProgressPostAt = 0;
+const PROGRESS_THROTTLE_MS = 100;
+function postProgress(payload, force = false) {
+  const now = performance.now();
+  if (force || now - lastProgressPostAt >= PROGRESS_THROTTLE_MS) {
+    lastProgressPostAt = now;
+    post(payload);
+  }
+}
+
 function describeError(err) {
   if (err == null) return 'unknown';
   if (typeof err === 'number') {
@@ -146,10 +162,12 @@ async function loadModel(forceCandidate) {
               const pct = data.progress
                 ? Math.min(95, 10 + Math.round(data.progress * 0.85))
                 : 10;
-              post({
+              // Force-flush state transitions; throttle 'progress' chunks.
+              const force = data.status !== 'progress';
+              postProgress({
                 type: 'progress', progress: pct,
                 status: formatStatus(data), file: data.file,
-              });
+              }, force);
             },
           });
 
