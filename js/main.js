@@ -319,6 +319,16 @@ function setupSettingsPanel() {
     }
     renderState();
     updateHeaderModeLabel();
+
+    // Auto-close the panel after a successful save so the user does
+    // not need a second click. If we're still sitting on the boot
+    // screen and cloud is now fully configured, jump straight into
+    // the main screen — same effect as clicking START_CLOUD_MODE.
+    panel.hidden = true;
+    const onBootScreen = document.getElementById('boot-screen')?.classList.contains('active');
+    if (onBootScreen && settings.isCloudReady()) {
+      showMainScreen();
+    }
   });
 
   clearBtn?.addEventListener('click', () => {
