@@ -907,3 +907,68 @@ body {
     justify-content: center;
   }
 }
+
+/* ============================================
+   Image attach UI (multimodal queries)
+   ============================================ */
+.image-attach {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 4px;
+  flex-wrap: wrap;
+}
+
+.image-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  max-width: 100%;
+}
+
+.image-preview img {
+  max-height: 36px;
+  max-width: 64px;
+  object-fit: cover;
+  border-radius: 3px;
+  border: 1px solid var(--border-dim);
+}
+
+.image-preview-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.image-remove-btn {
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  color: var(--neon-red);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.image-remove-btn:hover {
+  background: rgba(255, 51, 102, 0.1);
+  box-shadow: var(--glow-red);
+}
+
+.query-input.drag-over {
+  border-color: var(--neon-cyan);
+  box-shadow: var(--glow-cyan);
+}

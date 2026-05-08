@@ -105,8 +105,23 @@
           id="query-input"
           class="query-input"
           placeholder="// Type your research question and press Cmd+Enter to spawn the swarm
-// Example: What are the trade-offs between WebGPU and WebGL for ML inference?"
+// Example: What are the trade-offs between WebGPU and WebGL for ML inference?
+// Drop an image into the input to research what's in it (Gemma 4 only)"
           rows="3"></textarea>
+
+        <!-- Image attachment row (hidden in lite mode where multimodal isn't supported) -->
+        <div class="image-attach" id="image-attach">
+          <input type="file" id="image-input" accept="image/*" hidden>
+          <button type="button" id="attach-btn" class="terminal-btn-sm" title="Attach an image to the query (Gemma 4)">
+            [ + attach_image ]
+          </button>
+          <div id="image-preview" class="image-preview" hidden>
+            <img id="image-preview-img" alt="attached image">
+            <span id="image-preview-name" class="image-preview-name"></span>
+            <button type="button" id="image-remove-btn" class="image-remove-btn" title="Remove image">×</button>
+          </div>
+        </div>
+
         <div class="query-actions">
           <div class="example-queries">
             <span class="examples-label">// suggestions:</span>

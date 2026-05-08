@@ -182,18 +182,26 @@ async function runToolWithFallback(primary, query, { onUpdate } = {}) {
 // PLANNER
 // ============================================
 
-export async function planQuery(model, query, { onUpdate } = {}) {
+export async function planQuery(model, query, { onUpdate, image } = {}) {
   onUpdate?.({ status: 'thinking', text: '' });
+
+  // When an image is attached, ask the planner to anchor sub-questions on
+  // both the visual content AND the user's optional text query. The image
+  // appears in the user message so multimodal Gemma 4 sees it directly.
+  const userText = image
+    ? `Image attached above.\nUser's question or prompt: "${query}"\n\nOutput exactly 3 numbered sub-questions about THIS image and the user's prompt now.`
+    : `Question: "${query}"\n\nOutput exactly 3 numbered sub-questions now.`;
 
   const messages = [
     { role: 'system', content: PLANNER_SYSTEM },
-    { role: 'user', content: `Question: "${query}"\n\nOutput the JSON array of sub-questions now.` },
+    { role: 'user', content: userText },
   ];
 
   let streamed = '';
   const raw = await model.chat(messages, {
     maxTokens: 400,
     temperature: 0.4,
+    image,
     onToken: (t) => {
       streamed += t;
       onUpdate?.({ status: 'thinking', text: streamed });
@@ -308,6 +316,7 @@ export async function synthesize(model, query, workerResults, { onUpdate } = {})
  */
 export async function runSwarm(model, query, callbacks = {}) {
   const {
+    image = null,
     onPlanner = () => {},
     onWorkerStart = () => {},
     onWorkerUpdate = () => {},
@@ -318,8 +327,9 @@ export async function runSwarm(model, query, callbacks = {}) {
   } = callbacks;
 
   try {
-    // Phase 1: planning
-    const plan = await planQuery(model, query, { onUpdate: onPlanner });
+    // Phase 1: planning. Image (if any) is consumed here and not propagated
+    // to workers — they research the planner's sub-questions in text.
+    const plan = await planQuery(model, query, { onUpdate: onPlanner, image });
 
     // Phase 2: workers in parallel
     plan.forEach((subQ, i) => onWorkerStart(i, subQ));

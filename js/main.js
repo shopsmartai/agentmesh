@@ -160,10 +160,91 @@ function showMainScreen() {
   setupQueryInterface();
 }
 
+// Currently attached image (Blob) — only used when the loaded model is
+// multimodal (Gemma 4). Cleared on swarm reset.
+let attachedImage = null;
+let attachedImageObjectUrl = null;
+
+function clearAttachedImage() {
+  if (attachedImageObjectUrl) {
+    URL.revokeObjectURL(attachedImageObjectUrl);
+    attachedImageObjectUrl = null;
+  }
+  attachedImage = null;
+  const wrap = document.getElementById('image-preview');
+  if (wrap) wrap.hidden = true;
+  const input = document.getElementById('image-input');
+  if (input) input.value = '';
+}
+
+function setAttachedImage(file) {
+  if (!file || !file.type?.startsWith('image/')) return;
+  if (attachedImageObjectUrl) URL.revokeObjectURL(attachedImageObjectUrl);
+  attachedImage = file;
+  attachedImageObjectUrl = URL.createObjectURL(file);
+  const img = document.getElementById('image-preview-img');
+  const name = document.getElementById('image-preview-name');
+  const wrap = document.getElementById('image-preview');
+  if (img) img.src = attachedImageObjectUrl;
+  if (name) name.textContent = `${file.name} · ${(file.size / 1024).toFixed(0)} KB`;
+  if (wrap) wrap.hidden = false;
+}
+
+function setupImageAttach() {
+  // If the loaded model isn't multimodal, hide the attach UI entirely so users
+  // aren't tempted to use a feature their lite-mode model can't fulfill.
+  if (!model.supportsImages) {
+    const wrap = document.getElementById('image-attach');
+    if (wrap) wrap.style.display = 'none';
+    return;
+  }
+
+  const fileInput = document.getElementById('image-input');
+  const attachBtn = document.getElementById('attach-btn');
+  const removeBtn = document.getElementById('image-remove-btn');
+  const queryInput = document.getElementById('query-input');
+
+  attachBtn?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file) setAttachedImage(file);
+  });
+  removeBtn?.addEventListener('click', clearAttachedImage);
+
+  // Drag-and-drop onto the textarea — much nicer than picking a file.
+  ['dragover', 'dragenter'].forEach((evt) =>
+    queryInput?.addEventListener(evt, (e) => {
+      e.preventDefault();
+      queryInput.classList.add('drag-over');
+    })
+  );
+  ['dragleave', 'dragend', 'drop'].forEach((evt) =>
+    queryInput?.addEventListener(evt, () => queryInput.classList.remove('drag-over'))
+  );
+  queryInput?.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (file && file.type?.startsWith('image/')) setAttachedImage(file);
+  });
+
+  // Allow paste-an-image (great for screenshots).
+  queryInput?.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items || [];
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) setAttachedImage(file);
+      }
+    }
+  });
+}
+
 function setupQueryInterface() {
   const queryInput = document.getElementById('query-input');
   const runBtn = document.getElementById('run-btn');
   const exampleBtns = document.querySelectorAll('.example-btn');
+
+  setupImageAttach();
 
   exampleBtns.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -186,6 +267,7 @@ function setupQueryInterface() {
     queryInput.focus();
     clearSwarm();
     resetStats();
+    clearAttachedImage();
   });
 
   document.getElementById('copy-btn')?.addEventListener('click', () => {
@@ -217,7 +299,11 @@ function setupQueryInterface() {
 
 async function runQuery(query) {
   query = (query || '').trim();
-  if (!query) return;
+  // Allow empty text query when an image is attached — the swarm can
+  // research the image alone ("describe what's in this and look up
+  // anything interesting").
+  if (!query && !attachedImage) return;
+  if (!query && attachedImage) query = 'Describe what is in this image and research the most interesting topics it raises.';
   if (currentRun) return; // simple lock
 
   const runBtn = document.getElementById('run-btn');
@@ -238,9 +324,14 @@ async function runQuery(query) {
   const viz = getViz();
   viz?.addNode('agent-planner', 'planner');
 
+  // Capture the image for this run so a later remove doesn't yank it
+  // mid-flight. The image is consumed by the planner once.
+  const runImage = attachedImage;
+
   currentRun = (async () => {
     try {
       await runSwarm(model, query, {
+        image: runImage,
         onPlanner: (u) => {
           updatePlannerCard(u);
           if (u.status === 'done' && viz && u.plan) {
