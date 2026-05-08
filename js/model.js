@@ -100,9 +100,15 @@ class ModelRuntime {
     return promise;
   }
 
-  /** True if the loaded model can accept image input (Gemma 4 family). */
+  /**
+   * True if the loaded model can accept image input. Currently returns
+   * false because the multimodal load path (Gemma4ForConditionalGeneration
+   * + AutoProcessor) is implemented in the worker but not yet enabled as
+   * the default — text-only pipeline() is more reliable on diverse Chrome
+   * drivers. Image upload UI is hidden until this returns true.
+   */
   get supportsImages() {
-    return this.modelLabel?.startsWith('gemma-4') === true;
+    return false;
   }
 
   abort() {

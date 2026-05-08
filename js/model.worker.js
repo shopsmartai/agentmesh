@@ -24,30 +24,17 @@
 
 const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
 
-// Gemma 4 needs per-component dtypes — audio/vision encoders don't have
-// q4f16 WebGPU kernels for some Chrome drivers, so they ship fp16 while the
-// decoder + embed_tokens stay quantized. This combo matches the official
-// webml-community/Gemma-4-WebGPU demo and is verified-working on prod.
-const GEMMA_4_DTYPE_OPTIMAL = {
-  audio_encoder: 'fp16',
-  vision_encoder: 'fp16',
-  embed_tokens: 'q4f16',
-  decoder_model_merged: 'q4f16',
-};
-// All-q4 fallback if the optimal mix fails (older drivers).
-const GEMMA_4_DTYPE_FALLBACK = {
-  audio_encoder: 'q4',
-  vision_encoder: 'q4',
-  embed_tokens: 'q4',
-  decoder_model_merged: 'q4',
-};
-
+// Gemma 4 E2B — text-only via the high-level pipeline() API, which the
+// nico-martin/gemma4-browser-extension reference proves works at v4.2.0.
+// Multimodal (Gemma4ForConditionalGeneration + AutoProcessor) is wired in
+// the chat path below for future work, but the load path stays on
+// pipeline() for now so the demo is reliable.
 const MODEL_GEMMA_4_E2B = {
   id: 'onnx-community/gemma-4-E2B-it-ONNX',
-  label: 'gemma-4-E2B-it', family: 'gemma', size: '~3.4GB',
+  label: 'gemma-4-E2B-it', family: 'gemma', size: '~3.1GB',
   attempts: [
-    { device: 'webgpu', dtype: GEMMA_4_DTYPE_OPTIMAL },
-    { device: 'webgpu', dtype: GEMMA_4_DTYPE_FALLBACK },
+    { device: 'webgpu', dtype: 'q4f16' },
+    { device: 'webgpu', dtype: 'q4' },
   ],
 };
 
@@ -238,16 +225,15 @@ async function loadModel(forceCandidate) {
             file: candidate.id,
           });
 
-          if (candidate.family === 'gemma') {
-            await loadGemma4(candidate, attempt);
-          } else {
-            await loadPipelineModel(candidate, attempt);
-          }
+          // Both Gemma 4 and SmolLM2 load via pipeline('text-generation', ...)
+          // for now. Multimodal Gemma4ForConditionalGeneration support is
+          // implemented but not the default load path — see loadGemma4.
+          await loadPipelineModel(candidate, attempt);
 
           modelInfo = {
             id: candidate.id, label: candidate.label,
             family: candidate.family, device,
-            multimodal: candidate.family === 'gemma',
+            multimodal: false,
           };
 
           post({ type: 'progress', progress: 100, status: `Ready · ${candidate.label} (${device})` });
