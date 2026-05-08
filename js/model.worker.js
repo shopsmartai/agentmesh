@@ -170,13 +170,14 @@ async function loadGemma4(candidate, attempt) {
   });
 
   // Warmup with a tiny generation so first user query doesn't pay the
-  // shader-compile cost on the critical path.
+  // shader-compile cost on the critical path. Processor signature is
+  // (prompt, image, audio, options) — pass null for both modalities here.
   post({ type: 'progress', progress: 98, status: 'Warming up model...' });
   const warmupPrompt = processor.apply_chat_template(
     [{ role: 'user', content: 'Hello' }],
     { add_generation_prompt: true, enable_thinking: false }
   );
-  const warmupInputs = await processor(warmupPrompt, null, { add_special_tokens: false });
+  const warmupInputs = await processor(warmupPrompt, null, null, { add_special_tokens: false });
   await model.generate({ ...warmupInputs, max_new_tokens: 2, do_sample: false });
 
   gemmaProcessor = processor;
@@ -339,7 +340,9 @@ async function chatViaGemma({ requestId, messages, maxTokens, temperature, image
     }
   }
 
-  const inputs = await gemmaProcessor(prompt, imageInput, { add_special_tokens: false });
+  // Processor signature: (prompt, image, audio, options). Audio support is
+  // wired but we don't expose audio input from the UI yet, so always null.
+  const inputs = await gemmaProcessor(prompt, imageInput, null, { add_special_tokens: false });
 
   let fullText = '';
   const streamer = new TextStreamer(gemmaProcessor.tokenizer, {
