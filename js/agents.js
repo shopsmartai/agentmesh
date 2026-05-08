@@ -12,59 +12,131 @@ import { runTool, formatResultsForModel, TOOLS } from './tools.js';
 // PROMPTS
 // ============================================
 
-const PLANNER_SYSTEM = `You are the Planner agent in a swarm. Your job is to break a research question into 3-5 specific sub-questions that other agents will research in parallel.
+const PLANNER_SYSTEM = `You decompose a research question into exactly 3 sub-questions for parallel research.
+
+Each sub-question explores a different angle of THE SAME TOPIC as the original question. The three angles are:
+1. Definition / what it is
+2. Examples / how it is used
+3. Limitations / trade-offs
+
+Output exactly 3 lines, numbered "1.", "2.", "3.". Each sub-question MUST contain the main topic from the original question. No preamble. No JSON. No extra text.`;
+
+const WORKER_SYSTEM = `You answer ONE sub-question using ONLY the research notes provided.
 
 Rules:
-- Each sub-question should be focused, atomic, and answerable independently.
-- Avoid sub-questions that just rephrase the original.
-- Pick angles that together produce a complete answer.
-- Output ONLY a JSON array of strings, nothing else.
+- Read the notes carefully. Quote or paraphrase specific facts from them.
+- If the notes do not contain enough information, say so directly. Do not invent facts.
+- Write 2-4 short sentences in plain prose. No bullets, no headings.
+- Stay strictly on the sub-question — do not drift to related topics.
+- Maximum 80 words.`;
 
-Example:
-Question: "What are the trade-offs between WebGPU and WebGL for ML inference?"
-Output: ["What is WebGPU and how does it differ from WebGL technically?", "What ML frameworks support WebGPU in 2026?", "What are real-world performance benchmarks of WebGPU vs WebGL for inference?", "What are the browser compatibility limitations of WebGPU today?"]`;
-
-const WORKER_SYSTEM = `You are a Worker agent in a research swarm. You have been assigned ONE specific sub-question.
-
-You have access to one tool result (research notes from Wikipedia or Hacker News). Read it carefully and write a concise, factual answer to your sub-question in 3-5 sentences.
+const SYNTHESIZER_SYSTEM = `You combine findings from several research agents into one clear answer.
 
 Rules:
-- Stay focused on YOUR sub-question only.
-- Cite specific facts from the research notes.
-- If the notes don't answer your question, say so honestly.
-- Plain prose, no bullet points.
-- 100 words maximum.`;
-
-const SYNTHESIZER_SYSTEM = `You are the Synthesizer agent. The other agents in the swarm have each researched a sub-question. Combine their findings into a final answer to the user's original question.
-
-Rules:
-- Write a clear, well-organized response in markdown.
-- Use the agents' findings as your evidence base.
-- If findings conflict, acknowledge it.
-- Use ## headings for major sections, bullet points where useful.
-- End with a brief "Bottom line:" sentence.
-- Do not invent facts not present in the agents' findings.`;
+- Write a complete, well-structured response to the original question in markdown.
+- Use TWO or THREE \`##\` section headings that map to the major themes in the findings.
+- Inside each section, use short paragraphs or bullet points (whichever reads better).
+- Only use facts present in the agents' findings — never invent.
+- If findings disagree or are thin on a topic, acknowledge it briefly.
+- End with a single line starting with "**Bottom line:**" that gives a one-sentence takeaway.
+- No preamble like "Here is the answer". Start directly with content.`;
 
 // ============================================
 // HELPERS
 // ============================================
 
-function safeParseJSON(text) {
-  // Models often wrap JSON in markdown fences; strip them.
-  const cleaned = text
-    .replace(/```json\s*/gi, '')
-    .replace(/```\s*$/g, '')
-    .replace(/^[^\[\{]*/, '') // anything before first [ or {
-    .trim();
+/**
+ * Extract sub-questions from planner output. Handles multiple formats:
+ *   1. "1. foo\n2. bar\n3. baz"  (preferred numbered format)
+ *   2. "- foo\n- bar"              (bullets)
+ *   3. JSON array                   (legacy fallback)
+ * Returns array of cleaned question strings, or empty if nothing found.
+ */
+function extractSubQuestions(text) {
+  if (!text) return [];
 
-  // Find the first valid JSON array
-  const match = cleaned.match(/\[[\s\S]*\]/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
+  // Try JSON first (legacy compatibility — array of strings or objects)
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const items = parsed
+          .map((item) => {
+            if (typeof item === 'string') return item.trim();
+            // Common object shapes: {title}, {question}, {text}, {q}
+            if (item && typeof item === 'object') {
+              return String(item.title || item.question || item.text || item.q || '').trim();
+            }
+            return '';
+          })
+          .filter((q) => isValidSubQuestion(q));
+        if (items.length > 0) return items;
+      }
+    } catch { /* fallthrough */ }
   }
+
+  // Try to extract any "title": "..." or "question": "..." patterns from
+  // malformed JSON-ish output (common with small models)
+  const titleMatches = [...text.matchAll(/["'](?:title|question|q|text)["']\s*:\s*["']([^"']{8,200})["']/gi)];
+  if (titleMatches.length > 0) {
+    const items = titleMatches
+      .map((m) => m[1].trim())
+      .filter((q) => isValidSubQuestion(q));
+    if (items.length > 0) return items;
+  }
+
+  // Numbered or bulleted list
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const items = [];
+  for (const line of lines) {
+    // Match "1." "1)" "-" "*" "•" prefixes
+    const m = line.match(/^(?:\d+[\.\)]|[\-\*\u2022])\s+(.+)$/);
+    if (m && m[1]) {
+      let q = m[1].trim();
+      // Strip wrapping quotes/backticks
+      q = q.replace(/^["'`]+|["'`]+$/g, '').trim();
+      if (isValidSubQuestion(q)) items.push(q);
+    }
+  }
+  return items;
+}
+
+/**
+ * Reject obvious garbage output from small models.
+ */
+function isValidSubQuestion(q) {
+  if (!q || typeof q !== 'string') return false;
+  if (q.length < 8 || q.length > 240) return false;
+  // Common garbage patterns
+  if (/\[object\s+Object\]/i.test(q)) return false;
+  if (/^(yes|no|ok|true|false|null|undefined)\.?$/i.test(q)) return false;
+  if (/^\.\.\.$/.test(q)) return false;
+  // Must contain at least 3 alpha-rich words
+  const words = q.split(/\s+/).filter(w => /[a-z]{2,}/i.test(w));
+  if (words.length < 3) return false;
+  return true;
+}
+
+/**
+ * Returns true if the planned sub-questions share substantive vocabulary with
+ * the original query (signals that the model didn't just copy an example).
+ */
+function planSharesTopicWith(plan, query) {
+  const stopwords = new Set(['the','a','an','of','to','for','and','or','is','are','what','how','why','do','does','in','on','at','about','between','with','from']);
+  const tokens = (s) => s.toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !stopwords.has(w));
+
+  const queryWords = new Set(tokens(query));
+  if (queryWords.size === 0) return true; // can't check, assume ok
+
+  for (const q of plan) {
+    const qWords = tokens(q);
+    if (qWords.some(w => queryWords.has(w))) return true;
+  }
+  return false;
 }
 
 function pickToolForQuestion(question) {
@@ -98,19 +170,26 @@ export async function planQuery(model, query, { onUpdate } = {}) {
   });
 
   const text = raw || streamed;
-  let plan = safeParseJSON(text);
+  let plan = extractSubQuestions(text);
 
-  // Fallback if model fails to produce valid JSON
-  if (!Array.isArray(plan) || plan.length === 0) {
+  // Sanity check: at least one sub-question must share a keyword with the
+  // original query, otherwise the small model copied the example prompt.
+  if (plan.length > 0 && !planSharesTopicWith(plan, query)) {
+    plan = [];
+  }
+
+  // Fallback if model fails to produce a parseable list. We pick three
+  // distinct lenses on the topic to ensure the workers don't all duplicate.
+  if (plan.length === 0) {
     plan = [
-      `What is the core concept behind: ${query}?`,
-      `What are key facts and context for: ${query}?`,
-      `What are common opinions or trade-offs about: ${query}?`,
+      `Background and definition: ${query}`,
+      `Real-world examples or use cases related to: ${query}`,
+      `Trade-offs, limitations, or criticisms of: ${query}`,
     ];
   }
 
-  // Cap to 4 sub-questions to keep latency reasonable
-  plan = plan.slice(0, 4).map(s => String(s).trim()).filter(Boolean);
+  // Cap to 3 sub-questions for predictable latency on small models
+  plan = plan.slice(0, 3);
 
   onUpdate?.({ status: 'done', text: `Decomposed into ${plan.length} sub-questions`, plan });
   return plan;
