@@ -242,101 +242,132 @@ class ModelRuntime {
     // Per-call timeout in ms. Gemini calls usually return in 3-10 seconds;
     // we cap at 60 to catch stalled requests (we observed one worker
     // hanging indefinitely while two others completed). On timeout we
-    // continue to the next model in the fallback chain.
+    // retry the same model up to MAX_RETRIES times, then fall through.
     const REQUEST_TIMEOUT_MS = 60000;
 
+    // Max attempts per model before giving up on it and trying the next.
+    // 5xx (e.g. "Internal error encountered") and timeouts on Gemini are
+    // almost always transient — Google routes around the bad backend
+    // within 1-3 seconds. With 3 attempts and 1s/2s backoff we recover
+    // from the typical capacity hiccup without ever showing the user an
+    // error popup.
+    const MAX_RETRIES = 3;
+
     let lastError = null;
+
+    // Try each model in fallback order. For each model, retry up to
+    // MAX_RETRIES times on transient errors (5xx, 429, timeout) before
+    // moving on to the next model in the chain.
     for (let i = 0; i < tryOrder.length; i++) {
       const modelId = tryOrder[i];
       const url = `${GEMINI_BASE}/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-      // Combine the caller's optional abort signal with our own timeout.
-      const localController = new AbortController();
-      const timeoutId = setTimeout(() => localController.abort(), REQUEST_TIMEOUT_MS);
-      const onCallerAbort = () => localController.abort();
-      if (signal) {
-        if (signal.aborted) localController.abort();
-        else signal.addEventListener('abort', onCallerAbort, { once: true });
-      }
+      let modelExhausted = false; // hard fail (e.g. 404) — skip to next model
 
-      let response;
-      try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body,
-          signal: localController.signal,
-        });
-      } catch (err) {
+      for (let attempt = 0; attempt < MAX_RETRIES && !modelExhausted; attempt++) {
+        // On retry, wait with exponential backoff: 1s, 2s, 4s. The pause
+        // gives Google's load balancer time to route to a healthy backend.
+        if (attempt > 0) {
+          const backoffMs = 1000 * Math.pow(2, attempt - 1);
+          console.warn(`[model] ${modelId} retry ${attempt}/${MAX_RETRIES - 1} after ${backoffMs}ms`);
+          await new Promise((r) => setTimeout(r, backoffMs));
+        }
+
+        // Combine the caller's optional abort signal with our own timeout.
+        const localController = new AbortController();
+        const timeoutId = setTimeout(() => localController.abort(), REQUEST_TIMEOUT_MS);
+        const onCallerAbort = () => localController.abort();
+        if (signal) {
+          if (signal.aborted) localController.abort();
+          else signal.addEventListener('abort', onCallerAbort, { once: true });
+        }
+
+        let response;
+        try {
+          response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            signal: localController.signal,
+          });
+        } catch (err) {
+          clearTimeout(timeoutId);
+          signal?.removeEventListener('abort', onCallerAbort);
+          // Caller cancelled — bail out entirely, don't retry.
+          if (signal?.aborted) throw new Error('Cloud chat aborted by caller');
+          // Our own timeout — retryable on this same model.
+          const isTimeout = err.name === 'AbortError';
+          lastError = new Error(
+            isTimeout
+              ? `Gemini API (${modelId}): request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`
+              : `Network error calling Gemini API: ${err.message}`
+          );
+          continue; // retry same model
+        }
         clearTimeout(timeoutId);
         signal?.removeEventListener('abort', onCallerAbort);
-        // Distinguish caller-cancellation from our own timeout.
-        if (signal?.aborted) throw new Error('Cloud chat aborted by caller');
-        const isTimeout = err.name === 'AbortError';
-        lastError = new Error(
-          isTimeout
-            ? `Gemini API (${modelId}): request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`
-            : `Network error calling Gemini API: ${err.message}`
-        );
-        continue;
-      }
-      clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', onCallerAbort);
 
-      if (response.ok) {
-        let data;
+        if (response.ok) {
+          let data;
+          try {
+            data = await response.json();
+          } catch (err) {
+            lastError = new Error(`Gemini API: malformed response: ${err.message}`);
+            continue; // retry same model
+          }
+
+          const candidate = data?.candidates?.[0];
+          const finishReason = candidate?.finishReason;
+          const parts = candidate?.content?.parts || [];
+          // Drop "thought" parts if Gemini ever exposes them as separate
+          // parts (newer API). Keep regular text parts.
+          const cleanParts = parts.filter((p) => !p.thought);
+          const rawText = cleanParts.map((p) => p.text || '').join('');
+
+          if (!rawText) {
+            const reason = finishReason ? ` (finishReason: ${finishReason})` : '';
+            lastError = new Error(`Gemini API (${modelId}) returned empty response${reason}`);
+            // Empty response sometimes means the model truncated under
+            // load. Worth one retry, but if it keeps happening, fall
+            // through to the next model. Treat like a transient error.
+            continue; // retry same model
+          }
+
+          const fullText = stripThinkingArtifacts(rawText);
+
+          try { onToken?.(fullText); } catch (e) { console.warn('[model] onToken threw:', e); }
+          return fullText;
+        }
+
+        // Non-2xx. Pull the error JSON if Google sent one.
+        let detail = `HTTP ${response.status}`;
         try {
-          data = await response.json();
-        } catch (err) {
-          lastError = new Error(`Gemini API: malformed response: ${err.message}`);
-          continue;
-        }
+          const errBody = await response.json();
+          detail = errBody?.error?.message || detail;
+        } catch { /* ignore */ }
 
-        const candidate = data?.candidates?.[0];
-        const finishReason = candidate?.finishReason;
-        const parts = candidate?.content?.parts || [];
-        // Drop "thought" parts if Gemini ever exposes them as separate
-        // parts (newer API). Keep regular text parts.
-        const cleanParts = parts.filter((p) => !p.thought);
-        const rawText = cleanParts.map((p) => p.text || '').join('');
-
-        if (!rawText) {
-          const reason = finishReason ? ` (finishReason: ${finishReason})` : '';
-          lastError = new Error(`Gemini API (${modelId}) returned empty response${reason}`);
-          continue;
-        }
-
-        const fullText = stripThinkingArtifacts(rawText);
-
-        try { onToken?.(fullText); } catch (e) { console.warn('[model] onToken threw:', e); }
-        return fullText;
-      }
-
-      // Non-2xx. Pull the error JSON if Google sent one.
-      let detail = `HTTP ${response.status}`;
-      try {
-        const errBody = await response.json();
-        detail = errBody?.error?.message || detail;
-      } catch { /* ignore */ }
-
-      // 404 = "this specific model isn't available with your key" — try
-      // the next one. 429 = rate limit, also worth retrying with a
-      // different model. Other 4xx (auth, bad request) bail because
-      // retrying won't help — those are caller-side problems.
-      if (response.status === 404 || response.status === 429) {
-        console.warn(`[model] ${modelId} returned ${response.status}; falling through.`);
         lastError = new Error(`Gemini API (${modelId}): ${detail}`);
-        await new Promise((r) => setTimeout(r, 500 * (i + 1)));
-        continue;
-      }
-      if (response.status >= 400 && response.status < 500) {
-        throw new Error(`Gemini API: ${detail}`);
-      }
 
-      // 5xx. Google-side problem, often capacity. Try the next model.
-      console.warn(`[model] ${modelId} returned ${response.status}; falling through.`);
-      lastError = new Error(`Gemini API (${modelId}): ${detail}`);
-      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+        // 404 = "this specific model isn't available with your key" — no
+        // amount of retries fixes it. Skip to the next model in the chain.
+        if (response.status === 404) {
+          console.warn(`[model] ${modelId} returned 404; skipping to next model.`);
+          modelExhausted = true;
+          break;
+        }
+
+        // Other 4xx (400 bad request, 401/403 auth) — bail completely.
+        // Retrying or trying another model won't help: the user's key or
+        // payload is the problem.
+        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+          throw new Error(`Gemini API: ${detail}`);
+        }
+
+        // 429 (rate limit) and 5xx (capacity / "Internal error
+        // encountered") are retryable on the same model.
+        console.warn(`[model] ${modelId} returned ${response.status}; will retry.`);
+      }
+      // All retries exhausted on this model — try the next one.
     }
 
     throw lastError || new Error('Gemini API: all models in fallback chain failed');
