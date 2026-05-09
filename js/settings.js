@@ -29,13 +29,18 @@ const VALID_MODES = new Set(['local', 'cloud']);
 const DEFAULT_CLOUD_MODEL = 'gemma-4-26b-a4b-it';
 // Fallback chain if the chosen model 5xx's. Both Gemma 4 variants are
 // hosted on every AI Studio key (verified). gemma-3-27b-it was here
-// previously but routinely 404s in v1beta — removed because the 404
-// surfaced to users when both gemma-4 variants briefly overlapped on
-// transient errors.
+// previously but routinely 404s in v1beta.
 export const CLOUD_MODEL_FALLBACKS = [
   'gemma-4-26b-a4b-it',
   'gemma-4-31b-it',
 ];
+// Supported model IDs for cloud mode. Anything outside this list (e.g.
+// stale gemma-3-27b-it values left in localStorage from an earlier
+// session) gets reset to the default on next read.
+const SUPPORTED_CLOUD_MODELS = new Set([
+  'gemma-4-26b-a4b-it',
+  'gemma-4-31b-it',
+]);
 
 const listeners = new Set();
 
@@ -76,7 +81,15 @@ export function setApiKey(key) {
 }
 
 export function getCloudModel() {
-  return localStorage.getItem(KEYS.cloudModel) || DEFAULT_CLOUD_MODEL;
+  const stored = localStorage.getItem(KEYS.cloudModel);
+  if (stored && SUPPORTED_CLOUD_MODELS.has(stored)) return stored;
+  // Stale value from an earlier session (e.g. gemma-3-27b-it). Reset it
+  // so the next save round-trips a sane value instead of leaving the
+  // bad one in storage where it'll keep coming back.
+  if (stored) {
+    try { localStorage.removeItem(KEYS.cloudModel); } catch {}
+  }
+  return DEFAULT_CLOUD_MODEL;
 }
 
 export function setCloudModel(modelId) {
