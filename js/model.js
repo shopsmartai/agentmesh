@@ -319,13 +319,21 @@ class ModelRuntime {
         detail = errBody?.error?.message || detail;
       } catch { /* ignore */ }
 
-      // 4xx errors mean we (or the user) sent something wrong — bail
-      // immediately, retrying won't help.
+      // 404 = "this specific model isn't available with your key" — try
+      // the next one. 429 = rate limit, also worth retrying with a
+      // different model. Other 4xx (auth, bad request) bail because
+      // retrying won't help — those are caller-side problems.
+      if (response.status === 404 || response.status === 429) {
+        console.warn(`[model] ${modelId} returned ${response.status}; falling through.`);
+        lastError = new Error(`Gemini API (${modelId}): ${detail}`);
+        await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+        continue;
+      }
       if (response.status >= 400 && response.status < 500) {
         throw new Error(`Gemini API: ${detail}`);
       }
 
-      // 5xx — Google-side problem, often capacity. Try the next model.
+      // 5xx. Google-side problem, often capacity. Try the next model.
       console.warn(`[model] ${modelId} returned ${response.status}; falling through.`);
       lastError = new Error(`Gemini API (${modelId}): ${detail}`);
       await new Promise((r) => setTimeout(r, 500 * (i + 1)));

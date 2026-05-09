@@ -27,12 +27,14 @@ const VALID_MODES = new Set(['local', 'cloud']);
 // it gives 31B-class quality at much lower latency and stays well within
 // the free tier's per-minute quotas.
 const DEFAULT_CLOUD_MODEL = 'gemma-4-26b-a4b-it';
-// Fallback chain if the chosen model 404s or quota-limits. We keep the
-// older Gemma 3 variants as a safety net so the demo never goes dark.
+// Fallback chain if the chosen model 5xx's. Both Gemma 4 variants are
+// hosted on every AI Studio key (verified). gemma-3-27b-it was here
+// previously but routinely 404s in v1beta — removed because the 404
+// surfaced to users when both gemma-4 variants briefly overlapped on
+// transient errors.
 export const CLOUD_MODEL_FALLBACKS = [
   'gemma-4-26b-a4b-it',
   'gemma-4-31b-it',
-  'gemma-3-27b-it',
 ];
 
 const listeners = new Set();
