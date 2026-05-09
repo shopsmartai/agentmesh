@@ -168,6 +168,51 @@ export async function searchHackerNews(query, { limit = 5 } = {}) {
   };
 }
 
+// HN story titles alone are thin signal for opinion swarms. Searching the
+// COMMENT text (via Algolia's tags=comment filter) returns paragraphs of
+// real user takes — exactly the kind of grounded opinion content that
+// Wikipedia does not have.
+export async function searchHackerNewsComments(query, { limit = 5 } = {}) {
+  const url = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&hitsPerPage=${limit}&tags=comment`;
+  const res = await fetchWithTimeout(url);
+  if (!res.ok) throw new Error('hackernews comments search failed');
+  const data = await res.json();
+
+  return {
+    source: 'hackernews_comments',
+    query,
+    results: (data.hits || [])
+      .map((hit) => {
+        // comment_text comes through as HTML. Strip tags, decode
+        // numeric and named entities, collapse whitespace.
+        const plain = (hit.comment_text || '')
+          .replace(/<[^>]+>/g, '')
+          // numeric hex entities like &#x2F; -> /
+          .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+          // numeric decimal entities like &#39; -> '
+          .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+          // common named entities
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'")
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (!plain) return null;
+        return {
+          title: hit.story_title || `HN comment by ${hit.author || 'anonymous'}`,
+          extract: plain.slice(0, 360),
+          url: `https://news.ycombinator.com/item?id=${hit.objectID}`,
+          author: hit.author || '',
+        };
+      })
+      .filter(Boolean)
+      .slice(0, limit),
+  };
+}
+
 // ============================================
 // DUCKDUCKGO Instant Answer
 // (Free, CORS-friendly — limited but useful for entity lookups)
@@ -254,6 +299,12 @@ export const TOOLS = {
     description: 'Search Hacker News for recent discussions and links on a topic.',
     args: ['query'],
     run: searchHackerNews,
+  },
+  hackernews_comments: {
+    name: 'hackernews_comments',
+    description: 'Search Hacker News COMMENT text for substantive user opinions and takes on a topic.',
+    args: ['query'],
+    run: searchHackerNewsComments,
   },
   duckduckgo: {
     name: 'duckduckgo',

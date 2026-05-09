@@ -294,16 +294,70 @@ export async function planQuery(model, query, { onUpdate, image } = {}) {
 // WORKER
 // ============================================
 
+// Pull notes from multiple sources in parallel and combine them. Wikipedia
+// gives encyclopedic grounding; HN comments give substantive user opinions
+// that Wikipedia cannot. The model sees both as one notes block with
+// source labels and decides which to anchor on.
+async function gatherMultiSourceNotes(query, { onUpdate } = {}) {
+  onUpdate?.({ status: 'tool', text: `searching wikipedia + hackernews_comments for "${query}"` });
+
+  const [wiki, hnComments] = await Promise.allSettled([
+    runTool('wikipedia', query),
+    runTool('hackernews_comments', query),
+  ]);
+
+  const wikiHits = (wiki.status === 'fulfilled' && wiki.value.ok) ? (wiki.value.results || []) : [];
+  const hnHits = (hnComments.status === 'fulfilled' && hnComments.value.ok) ? (hnComments.value.results || []) : [];
+
+  // If both came back empty, cascade through the existing fallback chain
+  // on Wikipedia's primary failure path. This catches niche topics where
+  // neither source has anything direct.
+  if (wikiHits.length === 0 && hnHits.length === 0) {
+    const fb = await runToolWithFallback('wikipedia', query, { onUpdate });
+    return {
+      ok: fb.toolResult.ok,
+      sources: [fb.toolUsed],
+      results: fb.toolResult.results || [],
+      formatted: formatResultsForModel(fb.toolResult),
+    };
+  }
+
+  // Combine results with source labels so the model can attribute claims.
+  const lines = [];
+  if (wikiHits.length > 0) {
+    lines.push(`[source: wikipedia]`);
+    for (const r of wikiHits) {
+      if (r.extract) lines.push(`- ${r.title}: ${r.extract.slice(0, 280)}`);
+    }
+  }
+  if (hnHits.length > 0) {
+    lines.push(``);
+    lines.push(`[source: hackernews_comments]`);
+    for (const r of hnHits) {
+      if (r.extract) lines.push(`- (${r.author || 'anon'}) ${r.extract}`);
+    }
+  }
+
+  const sources = [];
+  if (wikiHits.length > 0) sources.push('wikipedia');
+  if (hnHits.length > 0) sources.push('hackernews_comments');
+
+  return {
+    ok: true,
+    sources,
+    results: [...wikiHits, ...hnHits],
+    formatted: lines.join('\n'),
+  };
+}
+
 export async function runWorker(model, subQuestion, agentId, originalQuery, { onUpdate } = {}) {
   // Each worker has a fixed perspective (skeptic / advocate / pragmatist).
-  // The agentId picks which perspective; the planner's per-perspective
-  // search phrase drives the tool query.
   const perspective = WORKER_PERSPECTIVES[agentId] || WORKER_PERSPECTIVES[0];
 
-  // Step 1: pick a primary tool, run it, cascade through fallbacks if empty
-  const primary = pickToolForQuestion(subQuestion);
-  const { toolUsed: toolName, toolResult } = await runToolWithFallback(primary, subQuestion, { onUpdate });
-  const notes = formatResultsForModel(toolResult);
+  // Step 1: gather notes from multiple sources in parallel
+  const gathered = await gatherMultiSourceNotes(subQuestion, { onUpdate });
+  const toolName = gathered.sources.join(' + ');
+  const notes = gathered.formatted;
 
   // Step 2: ask the model to write the perspective's response
   onUpdate?.({ status: 'thinking', text: '' });
@@ -331,7 +385,7 @@ export async function runWorker(model, subQuestion, agentId, originalQuery, { on
     status: 'done',
     text: answer,
     toolUsed: toolName,
-    sources: toolResult.results || [],
+    sources: gathered.results || [],
     role: perspective.role,
     label: perspective.label,
   });
@@ -341,7 +395,7 @@ export async function runWorker(model, subQuestion, agentId, originalQuery, { on
     subQuestion,
     answer,
     toolUsed: toolName,
-    sources: toolResult.results || [],
+    sources: gathered.results || [],
     role: perspective.role,
     label: perspective.label,
   };
