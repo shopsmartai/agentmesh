@@ -242,18 +242,25 @@ function extractTopic(query) {
     .replace(/^from\s+/i, '')
     .trim();
 
-  // For comparisons ("X better than Y", "X vs Y", "X or Y"), keep only the
-  // first side. Wikipedia does not have an article about the comparison
-  // itself; it has separate articles for each thing being compared.
+  // For comparisons ("X better than Y", "X vs Y", "X or Y"), keep only
+  // the first side. Wikipedia does not have an article about the
+  // comparison itself; it has separate articles for each thing compared.
   s = s.replace(/\s+(better|worse|cheaper|more|less|faster|slower|stronger|weaker)\s+than\s+.*$/i, '');
   s = s.replace(/\s+(vs|versus|or)\s+\S.*$/i, '');
 
-  // Cap at 4 content words. Wikipedia srsearch ranks short topical queries
+  // Strip trailing opinion modifiers like "actually beneficial",
+  // "really worth it", "any good". These don't help Wikipedia find the
+  // topic article and rank tangential pages instead.
+  s = s.replace(/\s+(actually|really|truly|even|maybe)\s+(\w+)\s*$/i, '');
+  s = s.replace(/\s+(beneficial|good|bad|worth(while)?|effective|useful|harmful|valuable|important|right|wrong)\s*$/i, '');
+  s = s.replace(/\s+a\s+good\s+\w+\s*$/i, ''); // "a good investment", "a good idea"
+
+  // Cap at 3 content words. Wikipedia srsearch ranks short topical queries
   // dramatically better than long ones — "remote work" finds the right
   // article; "remote work better than in-office work" does not.
   const words = s.split(/\s+/).filter(Boolean);
-  if (words.length > 4) {
-    s = words.slice(0, 4).join(' ');
+  if (words.length > 3) {
+    s = words.slice(0, 3).join(' ');
   }
 
   return s.trim();
