@@ -15,6 +15,46 @@ import * as settings from './settings.js';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
+// Gemma 4 on the Gemini API ignores thinkingBudget=0 and dumps internal
+// reasoning into the response — drafts, refinement passes, "Word count
+// check" notes — before the actual final answer. We can't fully disable
+// that on the API side, so we clean it up here.
+//
+// Heuristics, in order:
+// 1. Strip explicit thought-section markup (`<|channel>thought\n...<channel|>`).
+// 2. If the text contains the synth's structured headings, take everything
+//    from the LAST occurrence of the first heading to the end. The model
+//    typically writes 2-3 drafts; only the last is clean.
+// 3. Strip leading "Final Polish" / "Refining" / "Final answer:" labels.
+// 4. Trim outer whitespace.
+function stripThinkingArtifacts(raw) {
+  if (!raw) return '';
+  let text = String(raw);
+
+  // (1) Strip Gemma 4's formal thought channel if it appears.
+  text = text.replace(/<\|channel\|?>thought\n[\s\S]*?<channel\|>/g, '');
+  text = text.replace(/<\|think\|>[\s\S]*?<\|\/think\|>/g, '');
+
+  // (2) For synth outputs (which always start with "## Where they agreed"),
+  // find the LAST occurrence and take from there. The model's earlier
+  // drafts and notes appear before this point.
+  const synthHeadingRe = /##\s+Where they agreed/gi;
+  const matches = [...text.matchAll(synthHeadingRe)];
+  if (matches.length > 1) {
+    const lastMatch = matches[matches.length - 1];
+    text = text.slice(lastMatch.index);
+  }
+
+  // (3) Strip common "thinking out loud" prefix labels that the model
+  // sometimes leaves attached to the final answer.
+  text = text.replace(/^[\s\S]*?(Final Polish|Final answer|Refined version|Polished version)\s*[:.]?\s*\*?\s*\n+/i, '');
+
+  // (4) Trim leading/trailing whitespace and stray asterisks.
+  text = text.replace(/^[\s\*]+/, '').replace(/[\s]+$/, '');
+
+  return text;
+}
+
 class ModelRuntime {
   constructor() {
     this.worker = null;
@@ -182,6 +222,15 @@ class ModelRuntime {
       generationConfig: {
         temperature,
         maxOutputTokens: maxTokens,
+        // Try to disable Gemma 4's chain-of-thought output. The API only
+        // partially honors this for Gemma 4 (the model still dumps drafts
+        // into the response), so we also strip thinking artifacts client-
+        // side after the response arrives. Setting both fields covers the
+        // older and newer Gemini API variants.
+        thinkingConfig: {
+          thinkingBudget: 0,
+          includeThoughts: false,
+        },
       },
     });
 
@@ -223,20 +272,19 @@ class ModelRuntime {
         const candidate = data?.candidates?.[0];
         const finishReason = candidate?.finishReason;
         const parts = candidate?.content?.parts || [];
-        const fullText = parts.map((p) => p.text || '').join('');
+        // Drop "thought" parts if Gemini ever exposes them as separate
+        // parts (newer API). Keep regular text parts.
+        const cleanParts = parts.filter((p) => !p.thought);
+        const rawText = cleanParts.map((p) => p.text || '').join('');
 
-        if (!fullText) {
-          // Empty response. Could be a SAFETY block, MAX_TOKENS hit
-          // before any text was emitted, or model refusing. Surface a
-          // useful message instead of failing silently.
+        if (!rawText) {
           const reason = finishReason ? ` (finishReason: ${finishReason})` : '';
           lastError = new Error(`Gemini API (${modelId}) returned empty response${reason}`);
           continue;
         }
 
-        // Emit the full text in one shot so the UI's onToken callback
-        // still fires. Workers re-render their panel on every onToken
-        // call; one big call paints once instead of many small ones.
+        const fullText = stripThinkingArtifacts(rawText);
+
         try { onToken?.(fullText); } catch (e) { console.warn('[model] onToken threw:', e); }
         return fullText;
       }
