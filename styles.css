@@ -812,6 +812,27 @@ body {
   line-height: 1.7;
   margin-bottom: 16px;
   white-space: pre-wrap;
+  /* Long synthesizer outputs were getting clipped by the viewport with
+     no way to scroll them independently of the page. Cap the panel at
+     a reasonable height and give it its own scrollbar. The page-level
+     scroll on .terminal-main still works for navigating up to the
+     swarm cards. */
+  max-height: 65vh;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.synthesis-body::-webkit-scrollbar {
+  width: 8px;
+}
+.synthesis-body::-webkit-scrollbar-track {
+  background: var(--bg-deep);
+}
+.synthesis-body::-webkit-scrollbar-thumb {
+  background: var(--border-mid);
+}
+.synthesis-body::-webkit-scrollbar-thumb:hover {
+  background: var(--neon-cyan);
 }
 
 .synthesis-body h1,
@@ -1179,4 +1200,13 @@ body {
 
 .settings-status.err {
   color: var(--neon-red);
+}
+
+/* The synthesizer card in the swarm grid (full-width row at the bottom)
+   shows a 600-char preview while streaming, then collapses to a "scroll
+   for full" pointer when done. Keeping its preview shorter than worker
+   cards prevents it from visually competing with the actual synthesis
+   panel below it. */
+#agent-synth .agent-output {
+  max-height: 140px;
 }
