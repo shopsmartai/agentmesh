@@ -239,10 +239,25 @@ class ModelRuntime {
     const userModel = settings.getCloudModel();
     const tryOrder = [userModel, ...settings.CLOUD_MODEL_FALLBACKS.filter((m) => m !== userModel)];
 
+    // Per-call timeout in ms. Gemini calls usually return in 3-10 seconds;
+    // we cap at 60 to catch stalled requests (we observed one worker
+    // hanging indefinitely while two others completed). On timeout we
+    // continue to the next model in the fallback chain.
+    const REQUEST_TIMEOUT_MS = 60000;
+
     let lastError = null;
     for (let i = 0; i < tryOrder.length; i++) {
       const modelId = tryOrder[i];
       const url = `${GEMINI_BASE}/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+      // Combine the caller's optional abort signal with our own timeout.
+      const localController = new AbortController();
+      const timeoutId = setTimeout(() => localController.abort(), REQUEST_TIMEOUT_MS);
+      const onCallerAbort = () => localController.abort();
+      if (signal) {
+        if (signal.aborted) localController.abort();
+        else signal.addEventListener('abort', onCallerAbort, { once: true });
+      }
 
       let response;
       try {
@@ -250,12 +265,23 @@ class ModelRuntime {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body,
-          signal,
+          signal: localController.signal,
         });
       } catch (err) {
-        lastError = new Error(`Network error calling Gemini API: ${err.message}`);
+        clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', onCallerAbort);
+        // Distinguish caller-cancellation from our own timeout.
+        if (signal?.aborted) throw new Error('Cloud chat aborted by caller');
+        const isTimeout = err.name === 'AbortError';
+        lastError = new Error(
+          isTimeout
+            ? `Gemini API (${modelId}): request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`
+            : `Network error calling Gemini API: ${err.message}`
+        );
         continue;
       }
+      clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', onCallerAbort);
 
       if (response.ok) {
         let data;
