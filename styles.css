@@ -789,17 +789,56 @@ body {
 
 .synthesis-section {
   background: var(--bg-surface);
-  border: 1px solid var(--neon-cyan);
-  box-shadow: var(--glow-cyan);
-  padding: 20px 24px;
+  border: 1px solid var(--neon-magenta);
+  box-shadow: 0 0 12px rgba(255, 0, 153, 0.18), inset 0 0 0 1px rgba(255, 0, 153, 0.08);
+  padding: 18px 22px 20px;
+  margin-top: 24px;
   position: relative;
+  border-radius: 2px;
 }
 
+/* Top header row: title on the left, status badge on the right. Mirrors
+   the look of the agent cards in the swarm grid so the synthesizer
+   reads as "the final agent's output" rather than a separate panel. */
 .synthesis-header {
-  margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
   font-size: 13px;
+  font-weight: 700;
+}
+
+.synthesis-title {
+  letter-spacing: 0.5px;
+}
+
+.synthesis-status {
+  font-size: 11px;
+  text-transform: lowercase;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+
+.synthesis-status.thinking {
+  color: var(--neon-amber);
+  animation: blink 1.4s infinite;
+}
+
+.synthesis-status.done {
+  color: var(--neon-green);
+  animation: none;
+}
+
+/* Sub-header (the cat /swarm/final_synthesis.md prompt line) — visually
+   subordinate to the title row above it. */
+.synthesis-subhead {
+  font-size: 12px;
   border-bottom: 1px solid var(--border-dim);
-  padding-bottom: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+  opacity: 0.85;
 }
 
 .synth-cmd {
@@ -1202,11 +1241,8 @@ body {
   color: var(--neon-red);
 }
 
-/* The synthesizer card in the swarm grid (full-width row at the bottom)
-   shows a 600-char preview while streaming, then collapses to a "scroll
-   for full" pointer when done. Keeping its preview shorter than worker
-   cards prevents it from visually competing with the actual synthesis
-   panel below it. */
-#agent-synth .agent-output {
-  max-height: 140px;
-}
+/* The synthesizer no longer renders as a card in the swarm grid; the
+   dedicated .synthesis-section IS the synth surface. The old
+   #agent-synth .agent-output rule was removed when that card was
+   collapsed into the section, so there's nothing to override here.
+   Leaving this comment as a breadcrumb for anyone looking for it. */

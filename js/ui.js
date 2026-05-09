@@ -183,44 +183,49 @@ export function updateWorkerCard(index, { status, text, toolUsed, sources }) {
   }
 }
 
+// The synthesizer no longer renders as a card in the swarm grid. The
+// dedicated synthesis-section below the grid IS the synth surface — one
+// bordered, scrollable box with a status badge in its header. This avoids
+// the awkward "preview here, full body down there" split that confused
+// the layout. We keep the function name + signature so main.js doesn't
+// need to know.
+//
+// Note: we still register `agent-synth` as a virtual node in the viz
+// graph from main.js (for the worker→synth particle effects), even
+// though there's no DOM card with that ID. The viz layer is fine with
+// that — node positions are computed independently of DOM elements.
 export function renderSynthCard() {
-  const grid = $('#swarm-active');
-  const card = document.createElement('div');
-  card.className = 'agent-card thinking';
-  card.id = 'agent-synth';
-  card.style.gridColumn = '1 / -1';
-  card.innerHTML = `
-    <div class="agent-header">
-      <span class="agent-id glow-magenta">SYNTHESIZER · agent[∞]</span>
-      <span class="agent-status thinking">combining</span>
-    </div>
-    <div class="agent-task">Combining all worker findings into final synthesis...</div>
-    <div class="agent-output" id="agent-synth-output"><span class="cursor-blink"></span></div>
-  `;
-  grid.appendChild(card);
+  const section = $('#synthesis-section');
+  const status = $('#synthesis-status');
+  const body = $('#synthesis-body');
+  if (!section) return;
+
+  // Reveal the section if it's hidden, but DO NOT scroll — the user is
+  // currently watching the worker cards finish. The first streaming
+  // token will trigger the auto-scroll below.
+  section.style.display = 'block';
+  if (status) {
+    status.textContent = 'synthesizing';
+    status.className = 'synthesis-status thinking';
+  }
+  if (body) body.innerHTML = '<span class="cursor-blink"></span>';
+  synthPanelRevealed = false;
 }
 
-// Tracks whether we've already revealed and auto-scrolled to the synth
-// panel for the current run, so we only scroll once (not on every token).
+// Tracks whether we've already auto-scrolled to the synth panel for the
+// current run. We auto-scroll once on the first streaming token, not on
+// every token (which would jitter as the body grows).
 let synthPanelRevealed = false;
 
 export function updateSynthCard({ status, text }) {
-  const output = $('#agent-synth-output');
-  const card = $('#agent-synth');
-  if (!output || !card) return;
-
   if (status === 'thinking') {
-    // Card preview (first 600 chars). The full streaming output goes to
-    // the visible synthesis-body panel below — see updateSynthesisStreaming.
-    const preview = text.length > 600 ? text.slice(0, 600) + '...' : text;
-    output.innerHTML = `${escapeHtml(preview)}<span class="cursor-blink"></span>`;
     updateSynthesisStreaming(text);
   } else if (status === 'done') {
-    card.classList.remove('thinking');
-    card.classList.add('done');
-    card.querySelector('.agent-status').className = 'agent-status done';
-    card.querySelector('.agent-status').textContent = 'synthesized';
-    output.innerHTML = '<span style="color: var(--neon-green);">→ scroll down for full synthesis</span>';
+    const statusEl = $('#synthesis-status');
+    if (statusEl) {
+      statusEl.textContent = 'synthesized';
+      statusEl.className = 'synthesis-status done';
+    }
   }
 }
 

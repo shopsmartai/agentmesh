@@ -163,9 +163,15 @@
         </div>
       </div>
 
-      <!-- Final synthesis -->
+      <!-- Final synthesis — single bordered, scrollable box. The
+           synthesizer no longer has a separate card in the swarm grid;
+           this section IS the synth surface. -->
       <div class="synthesis-section" id="synthesis-section" style="display: none;">
         <div class="synthesis-header">
+          <span class="synthesis-title glow-magenta">SYNTHESIZER · agent[∞]</span>
+          <span class="synthesis-status thinking" id="synthesis-status">synthesizing</span>
+        </div>
+        <div class="synthesis-subhead">
           <span class="prompt">root@agentmesh:~$</span>
           <span class="synth-cmd">cat /swarm/final_synthesis.md</span>
         </div>
