@@ -97,7 +97,7 @@ Local Gemma 4 E2B at 3 to 5 minutes per query is real and unavoidable on consume
 
 The challenge was doing it without compromising the privacy story for users who care about it. Solution: BYOK. The Settings panel has a key input that writes only to localStorage. The public code contains no key (verified with `git grep` for `AIza` patterns before every push). The cloud path makes one fetch per agent call directly to `generativelanguage.googleapis.com` from the user's browser. We never see the key, never proxy the requests, never log anything.
 
-The cloud adapter has a 60-second per-call timeout (we observed one worker hang indefinitely while the other two completed) and a fallback chain across three Gemma 4 variants so a transient 5xx on one does not kill the swarm.
+The cloud adapter has a 60-second per-call timeout (we observed one worker hang indefinitely while the other two completed) and a two-stage resilience strategy. First, each model gets up to three attempts with 1s/2s exponential backoff if the API returns a 5xx, a 429, an empty body, or a timeout. Google's "Internal error encountered" on Gemma 4 is almost always transient and clears within one retry. Second, if a model still fails after retries, we fall through to the other Gemma 4 variant in the chain (26B-A4B and 31B). Hard errors like 404 (model not on your key) skip straight to the next variant; auth and bad-request errors bail immediately.
 
 ### 8. Gemma 4 dumps its thinking into the response
 

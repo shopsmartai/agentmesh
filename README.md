@@ -22,7 +22,7 @@ AgentMesh does the opposite. It runs three agents on your question, each holding
 - **The advocate** makes the strongest case in favor.
 - **The pragmatist** describes how it actually plays out in practice.
 
-Each agent searches public sources (Wikipedia, Hacker News comments, arXiv, DuckDuckGo) for evidence. Then a synthesizer shows you where they agreed, where they disagreed, and reconciles. You see the *argument*, not just the conclusion.
+Each agent searches public sources for evidence. Wikipedia and Hacker News comments are queried in parallel for every search; arXiv and DuckDuckGo kick in as deeper fallbacks when the first two come back empty. Then a synthesizer shows you where they agreed, where they disagreed, and reconciles. You see the *argument*, not just the conclusion.
 
 This is something single-call models cannot do well, even when you ask them to. The architecture forces the disagreement to actually surface.
 
@@ -41,7 +41,7 @@ AgentMesh ships with two ways to run Gemma 4. Switch between them in the Setting
 | Browser support | Chrome 113+ with WebGPU | Any modern browser |
 | Default | Yes | Opt-in |
 
-The four research tools (Wikipedia, HN comments, arXiv, DuckDuckGo) are called from the browser in both modes. They are public APIs that need no auth.
+All research tools (Wikipedia, HN comments, arXiv, DuckDuckGo) run from the browser in both modes via public APIs that need no auth. The default per-query path is Wikipedia + HN comments in parallel; arXiv and DuckDuckGo are fallback sources for niche topics.
 
 ## What it looks like
 
