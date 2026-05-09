@@ -63,11 +63,17 @@ function condenseWikiQuery(q) {
     .filter((w) => w.length > 2 && !WIKI_STOPWORDS.has(w));
   if (words.length === 0) return '';
 
-  // Wikipedia's srsearch ranks by TF-IDF: rare words dominate. Long words
-  // tend to be the topical nouns (e.g. "photosynthesis", "transformer",
-  // "WebGPU"); short common words ("core", "process") dilute the signal
-  // and pull off-topic articles to the top.
-  // Strategy: keep the 4 longest content words while preserving order.
+  // For short queries (<=6 content words), keep as-is. Now that the
+  // planner uses extractTopic() to produce short topic phrases, queries
+  // arrive here already focused — "remote work criticism drawbacks
+  // problems" is 5 words. Filtering further drops topic words like
+  // "work" (only 4 chars) and ranks unrelated articles like Wii Remote
+  // to the top. Trust the input.
+  if (words.length <= 6) return words.join(' ');
+
+  // For longer queries, keep top 4 longest content words while preserving
+  // order. This is the safety net for users typing 12-word questions
+  // directly without the planner cleaning them up.
   const sortedByLength = [...words].sort((a, b) => b.length - a.length);
   const keep = new Set(sortedByLength.slice(0, 4));
   return words.filter((w) => keep.has(w)).join(' ');

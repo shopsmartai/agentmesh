@@ -39,60 +39,43 @@ const WORKER_PERSPECTIVES = [
   {
     role: 'skeptic',
     label: 'SKEPTIC',
-    system: `You are the skeptic on a research panel. Your job is to find the strongest counter-arguments, criticisms, and real failure modes about the user's topic.
+    system: `You are the skeptic. Make the strongest case AGAINST the user's topic. Find concrete drawbacks, real failure modes, and the costs people overlook.
 
-Rules:
-- Use ONLY the research notes provided. If the notes are thin or off-topic, say so directly. Do not invent.
-- Be sharp and specific. Generic concerns are weak; concrete criticisms with named consequences are strong.
-- Quote or paraphrase real facts from the notes.
-- Write in plain prose. 2 to 4 short sentences. No bullets, no headings.
-- Maximum 80 words.`,
+Anchor your view in the research notes when they support it; you may also use your own knowledge of the topic to make a stronger, more specific argument. Be honest about what is well-evidenced vs widely-held belief.
+
+Be concrete. Generic worries are weak; named risks are strong. 3 to 5 sentences in plain prose. No bullets, no headings. Maximum 110 words.`,
   },
   {
     role: 'advocate',
     label: 'ADVOCATE',
-    system: `You are the advocate on a research panel. Your job is to make the strongest case in favor of the user's topic — find concrete benefits, success stories, and evidence of real value.
+    system: `You are the advocate. Make the strongest case FOR the user's topic. Find concrete benefits, named success cases, and evidence of real value.
 
-Rules:
-- Use ONLY the research notes provided. If the notes are thin or off-topic, say so directly. Do not invent.
-- Be substantive. "It is good" is not an argument; specific upsides are.
-- Quote or paraphrase real facts from the notes.
-- Write in plain prose. 2 to 4 short sentences. No bullets, no headings.
-- Maximum 80 words.`,
+Anchor your view in the research notes when they support it; you may also use your own knowledge of the topic to make a stronger, more specific argument. Be honest about what is well-evidenced vs widely-held belief.
+
+Be substantive. "It is good" is not an argument; specific upsides with examples are. 3 to 5 sentences in plain prose. No bullets, no headings. Maximum 110 words.`,
   },
   {
     role: 'pragmatist',
     label: 'PRAGMATIST',
-    system: `You are the pragmatist on a research panel. Your job is to describe how the user's topic actually plays out in practice — who uses it, when it works, when it does not, real-world trade-offs.
+    system: `You are the pragmatist. Describe how the user's topic actually plays out in practice — who uses it, when it works, when it does not, real-world trade-offs.
 
-Rules:
-- Use ONLY the research notes provided. If the notes are thin or off-topic, say so directly. Do not invent.
-- Focus on concrete usage and real outcomes. Avoid abstract evaluation.
-- Quote or paraphrase real facts from the notes.
-- Write in plain prose. 2 to 4 short sentences. No bullets, no headings.
-- Maximum 80 words.`,
+Anchor your view in the research notes when they support it; you may also use your own knowledge of the topic to ground the practical view. Be specific about populations, contexts, conditions.
+
+Avoid abstract evaluation. Concrete usage patterns and real outcomes only. 3 to 5 sentences in plain prose. No bullets, no headings. Maximum 110 words.`,
   },
 ];
 
-const SYNTHESIZER_SYSTEM = `You are combining the views of three agents who took different stances on the user's question (skeptic, advocate, pragmatist) into a single useful response.
+const SYNTHESIZER_SYSTEM = `Combine three agents' views (skeptic, advocate, pragmatist) into a markdown answer.
 
-Output structure (use exactly these section headings):
+Use exactly these three section headings, in this order, then a final bottom-line sentence:
 
 ## Where they agreed
-List facts or claims that survived from all three perspectives. If they did not really agree, say so.
-
 ## Where they disagreed
-Describe the points where the skeptic and advocate took opposing views. Present each side fairly in 1 to 2 sentences.
-
 ## What this means
-Reconcile what the agents wrote. Use only facts they introduced. Do not bring in new claims.
 
-End with a single line starting with "**Bottom line:**" that captures the takeaway in one sentence.
+End with: **Bottom line:** <one sentence>
 
-Rules:
-- Quote sparingly. Paraphrase mostly.
-- If the agents had thin or no real evidence, say that honestly. That is a meaningful finding.
-- Maximum 400 words across the whole response. No preamble.`;
+Use only facts the agents introduced. If their evidence was thin, say so honestly. Maximum 350 words. Start your response directly with the first heading. Do not restate these instructions.`;
 
 // ============================================
 // HELPERS
@@ -277,21 +260,20 @@ function extractTopic(query) {
 }
 
 export async function planQuery(model, query, { onUpdate, image } = {}) {
-  // The planner is now deterministic — no model call. We extract the topic
-  // and emit one search query per perspective. Saves ~30s on Gemma 4 vs
-  // the previous model-driven planner, which routinely echoed the user's
-  // full question instead of extracting the topic. Image is unused here
-  // (image handling stays wired for future multimodal work).
+  // The planner is deterministic — no model call. We extract the topic
+  // and produce three identical topic searches (one per perspective).
+  // Earlier we appended angle words like "criticism" / "benefits" but
+  // Wikipedia's TF-IDF treats those as part of the search and pulls
+  // unrelated articles ("Wii Remote" for "remote work criticism"). The
+  // angle is now driven entirely by the worker system prompt; the tool
+  // call just fetches the topic article.
   void image;
 
   onUpdate?.({ status: 'thinking', text: 'Extracting topic...' });
 
   const topic = extractTopic(query) || query;
-  const plan = [
-    `${topic} criticism drawbacks problems`,
-    `${topic} benefits advantages success`,
-    `${topic} real world usage examples`,
-  ];
+  // Three identical topic queries. Workers diverge on stance, not source.
+  const plan = [topic, topic, topic];
 
   onUpdate?.({
     status: 'done',
@@ -323,13 +305,13 @@ export async function runWorker(model, subQuestion, agentId, originalQuery, { on
     { role: 'system', content: perspective.system },
     {
       role: 'user',
-      content: `User's question: "${originalQuery}"\n\nSearch angle for this perspective: ${subQuestion}\n\nResearch notes:\n${notes}\n\nWrite your view now.`,
+      content: `User's question: "${originalQuery}"\n\nResearch notes:\n${notes}\n\nWrite your view as the ${perspective.role} now. Begin your response directly with your argument.`,
     },
   ];
 
   let streamed = '';
   const raw = await model.chat(messages, {
-    maxTokens: 160,
+    maxTokens: 220,
     temperature: 0,
     onToken: (t) => {
       streamed += t;
