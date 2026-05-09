@@ -222,15 +222,12 @@ class ModelRuntime {
       generationConfig: {
         temperature,
         maxOutputTokens: maxTokens,
-        // Try to disable Gemma 4's chain-of-thought output. The API only
-        // partially honors this for Gemma 4 (the model still dumps drafts
-        // into the response), so we also strip thinking artifacts client-
-        // side after the response arrives. Setting both fields covers the
-        // older and newer Gemini API variants.
-        thinkingConfig: {
-          thinkingBudget: 0,
-          includeThoughts: false,
-        },
+        // Note: we considered passing thinkingConfig.thinkingBudget=0 to
+        // disable Gemma 4's chain-of-thought, but the Gemini API rejects
+        // that parameter for Gemma 4 models with a 400 ("Thinking budget
+        // is not supported for this model"). We rely entirely on the
+        // client-side stripThinkingArtifacts() pass below to remove
+        // drafts and reasoning notes from the response.
       },
     });
 
